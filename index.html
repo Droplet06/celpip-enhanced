@@ -237,6 +237,17 @@
   .sy-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;background:var(--t3)}
   .sy-dot.ok{background:var(--green)} .sy-dot.pend{background:var(--gold)} .sy-dot.err{background:var(--red)}
   #btnSync{position:relative}
+
+  /* ── 窄屏顶栏 ──
+     图标从 4 个增到 5 个（加了 ☁️）后，375px 以下会溢出、按钮被挤出屏幕。
+     优先收间距、最后才缩按钮，尽量保住点击区。
+     必须放在 .topbar/.icon-btn/.ring 之后 —— 媒体查询不增加特异性，
+     写在前面会被后面的基础规则盖掉。 */
+  @media(max-width:430px){ .topbar{gap:6px} .chip{padding:6px 7px;font-size:12px} }
+  @media(max-width:365px){ .topbar{gap:4px} .icon-btn{width:34px;height:34px;font-size:15px} }
+  @media(max-width:340px){ .topbar{gap:3px} .icon-btn{width:31px;height:31px;font-size:14px;border-radius:10px}
+                           .ring{width:38px;height:38px} .ring svg{width:38px;height:38px}
+                           .chip{padding:5px 6px;font-size:11px} }
 </style>
 </head>
 <body>
@@ -244,7 +255,7 @@
   <!-- Top bar -->
   <div class="topbar">
     <div class="ring" title="今日目标">
-      <svg width="46" height="46"><circle class="rt" cx="23" cy="23" r="18"></circle><circle id="ringF" class="rf" cx="23" cy="23" r="18" stroke-dasharray="113" stroke-dashoffset="113"></circle></svg>
+      <svg width="46" height="46" viewBox="0 0 46 46"><circle class="rt" cx="23" cy="23" r="18"></circle><circle id="ringF" class="rf" cx="23" cy="23" r="18" stroke-dasharray="113" stroke-dashoffset="113"></circle></svg>
       <div class="rn" id="ringN">0</div>
     </div>
     <div class="tb-mid">
