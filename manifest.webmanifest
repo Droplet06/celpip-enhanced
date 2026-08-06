@@ -1,0 +1,17 @@
+{
+  "name": "Word Rush · CELPIP 词汇冲刺",
+  "short_name": "Word Rush",
+  "description": "CELPIP 词汇 / 阅读 / 写作练习，进度跨设备同步",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12131a",
+  "theme_color": "#12131a",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

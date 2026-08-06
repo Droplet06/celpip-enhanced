@@ -2,8 +2,16 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Word Rush · CELPIP 词汇冲刺</title>
+<!-- PWA：可加到主屏、离线可用。单文件直接双击打开时这些会 404，无害。 -->
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#12131a">
+<link rel="icon" href="./favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Word Rush">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   :root{
     --bg:#12131a; --s1:#1b1d28; --s2:#232636; --s3:#2d3145; --border:#343953;
@@ -1587,6 +1595,11 @@ function renderSync(){
 
 /* 启动时若已登录，先拉一次云端（把另一台设备的进度合进来） */
 if(cloudReady()){ setSync('pending'); syncNow(); } else { paintSyncDot(); }
+
+/* Service worker：离线可用 + 加到主屏。file:// 下注册会失败，忽略即可。 */
+if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+}
 document.getElementById('btnWrite').onclick=()=>openWriting();
 document.getElementById('wrBack').onclick=()=>showView('play');
 document.getElementById('btnMute').onclick=()=>{ S.muted=!S.muted; save(); document.getElementById('btnMute').textContent=S.muted?'🔇':'🔊'; if(S.muted) speechSynthesis.cancel(); };

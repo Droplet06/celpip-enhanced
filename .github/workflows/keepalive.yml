@@ -1,0 +1,52 @@
+name: Keepalive
+
+# 免费版 Supabase 连续 7 天无 API 活动会暂停项目，暂停约 90 天后项目被删除。
+# 上一个 celpip 项目就是这么消失的，连带整个云端进度。这个任务每 3 天戳一次。
+#
+# 第二个坑：GitHub 会在仓库连续 60 天无活动后自动停用定时任务 —— 长期出门在外
+# 恰好会踩到。所以顺手提交一个心跳文件，让仓库保持「有活动」。
+
+on:
+  schedule:
+    - cron: '17 6 */3 * *'   # 每 3 天 06:17 UTC（避开整点高峰，减少被延迟执行）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # anon key 本来就公开在 index.html 里（前端必须能拿到它），
+      # 真正的防线是 RLS，所以直接写在这里没有额外风险。
+      # keepalive 表有一条允许 anon select 的策略，专供这个任务。
+      - name: Ping Supabase
+        env:
+          SUPA_URL: https://rjreewvuelxctriwxpar.supabase.co
+          SUPA_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqcmVld3Z1ZWx4Y3RyaXd4cGFyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYwMzcyMTYsImV4cCI6MjEwMTYxMzIxNn0.3A-ndKcyu34XtD5gAl3j2xdQuQ-HTd732vnC_yu5-pY
+        run: |
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 30 \
+            "$SUPA_URL/rest/v1/keepalive?select=id,pinged_at" \
+            -H "apikey: $SUPA_KEY")
+          echo "HTTP $code"; cat /tmp/out.json; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Supabase 没有正常响应（HTTP $code）—— 项目可能已被暂停，去后台点 Restore"
+            exit 1
+          fi
+
+      - name: Touch heartbeat
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%SZ > .keepalive
+          git config user.name  "keepalive-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive
+          # [skip ci] 防止心跳提交反过来触发 Pages 重新部署
+          git diff --cached --quiet || git commit -m "chore: keepalive $(date -u +%F) [skip ci]"
+          git push
