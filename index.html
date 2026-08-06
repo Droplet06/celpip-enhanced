@@ -213,6 +213,30 @@
   @media(min-width:430px){ .wr-cmp{flex-direction:row} .wr-cmp-col{flex:1;min-width:0} }
 
   .brand{text-align:center;font-size:11px;color:var(--t3);letter-spacing:2px;text-transform:uppercase;padding-top:2px}
+
+  /* ── 云同步 ── */
+  .sy-box{background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:15px 14px;margin-bottom:12px}
+  .sy-title{font-size:14px;font-weight:800;margin-bottom:9px}
+  .sy-in{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:11px;padding:11px 12px;
+         color:var(--t1);font-size:15px;margin-bottom:9px;font-family:inherit}
+  .sy-in:focus{outline:none;border-color:var(--accent)}
+  .sy-tabs{display:flex;gap:8px;margin-bottom:11px}
+  .sy-tab{flex:1;background:var(--s2);border:1px solid var(--border);border-radius:11px;padding:9px;
+          color:var(--t2);font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit}
+  .sy-tab.on{background:var(--accent);border-color:var(--accent);color:#12131a}
+  .sy-msg{font-size:13px;line-height:1.6;margin-top:9px;padding:9px 11px;border-radius:10px;display:none}
+  .sy-msg.on{display:block}
+  .sy-msg.ok{background:rgba(79,209,139,.13);color:var(--green)}
+  .sy-msg.err{background:rgba(242,99,122,.13);color:var(--red)}
+  .sy-msg.info{background:var(--s2);color:var(--t2)}
+  .sy-row{display:flex;justify-content:space-between;align-items:center;font-size:13.5px;
+          padding:8px 0;border-bottom:1px solid var(--border)}
+  .sy-row:last-child{border-bottom:none}
+  .sy-row span:first-child{color:var(--t2)}
+  .sy-row span:last-child{color:var(--t1);font-weight:700}
+  .sy-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;background:var(--t3)}
+  .sy-dot.ok{background:var(--green)} .sy-dot.pend{background:var(--gold)} .sy-dot.err{background:var(--red)}
+  #btnSync{position:relative}
 </style>
 </head>
 <body>
@@ -231,6 +255,7 @@
     <button class="icon-btn" id="btnRead" title="今日阅读">📖</button>
     <button class="icon-btn" id="btnWrite" title="写作训练">✍️</button>
     <button class="icon-btn" id="btnColl" title="收集册">🏆</button>
+    <button class="icon-btn" id="btnSync" title="云同步">☁️</button>
     <button class="icon-btn" id="btnMute" title="声音">🔊</button>
   </div>
 
@@ -262,6 +287,12 @@
   <div class="view" id="vWrite">
     <div class="coll-head"><div class="coll-title" id="wrTitle">✍️ 写作训练</div><button class="icon-btn" id="wrBack">✕</button></div>
     <div id="wrBody"></div>
+  </div>
+
+  <!-- SYNC view -->
+  <div class="view" id="vSync">
+    <div class="coll-head"><div class="coll-title">☁️ 云同步</div><button class="icon-btn" id="syBack">✕</button></div>
+    <div id="syBody"></div>
   </div>
 
   <div class="brand">Word Rush · CELPIP</div>
@@ -304,6 +335,192 @@ const WR_DIMS = [                // CELPIP 官方四维，每维 0–12
 ];
 const WR_BANDS = [{v:3,t:'待加强'},{v:6,t:'尚可'},{v:9,t:'良好'},{v:12,t:'优秀'}];
 
+/* ═══════════════ 云同步（Supabase REST，零第三方依赖）═══════════════ */
+/* 只用到 5 个 REST 调用（注册/登录/刷 token/读一行/写一行），
+   为此引入 supabase-js 会牺牲「单文件零外部依赖、离线可用」这个性质，不划算。 */
+const SUPA_URL = "https://rjreewvuelxctriwxpar.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqcmVld3Z1ZWx4Y3RyaXd4cGFyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYwMzcyMTYsImV4cCI6MjEwMTYxMzIxNn0.3A-ndKcyu34XtD5gAl3j2xdQuQ-HTd732vnC_yu5-pY";
+const AUTH_KEY = 'celpip_wordrush_auth';
+const SYNC_WAIT = 3000;          // save() 后多久推一次（防抖）
+
+let AUTH = null;
+try{ AUTH = JSON.parse(localStorage.getItem(AUTH_KEY)) || null; }catch{ AUTH = null; }
+
+let syncTimer = null, syncing = false, syncDirty = false;
+let syncStatus = 'off', syncNote = '', lastSyncAt = null;
+
+const cloudReady = () => !!(SUPA_URL && SUPA_KEY && AUTH);
+
+function setAuth(a){
+  AUTH = a;
+  if(a) localStorage.setItem(AUTH_KEY, JSON.stringify(a));
+  else  localStorage.removeItem(AUTH_KEY);
+  paintSyncDot();
+}
+
+function setSync(st, note){
+  syncStatus = st; syncNote = note || '';
+  paintSyncDot();
+  if(document.getElementById('vSync') && document.getElementById('vSync').classList.contains('on')) renderSync();
+}
+
+function paintSyncDot(){
+  const b = document.getElementById('btnSync'); if(!b) return;
+  let d = b.querySelector('.sy-dot');
+  if(!d){ d = document.createElement('span'); d.className = 'sy-dot'; b.appendChild(d); }
+  d.className = 'sy-dot' + (syncStatus==='ok' ? ' ok'
+                          : syncStatus==='pending'||syncStatus==='syncing' ? ' pend'
+                          : syncStatus==='err'||syncStatus==='offline' ? ' err' : '');
+}
+
+async function supaFetch(path, opts, withAuth){
+  opts = opts || {};
+  const h = Object.assign({'apikey':SUPA_KEY, 'Content-Type':'application/json'}, opts.headers||{});
+  if(withAuth !== false && AUTH) h.Authorization = 'Bearer ' + AUTH.access_token;
+  return fetch(SUPA_URL + path, Object.assign({}, opts, {headers:h}));
+}
+
+async function authGo(kind, email, password){
+  const path = kind==='signup' ? '/auth/v1/signup' : '/auth/v1/token?grant_type=password';
+  const r = await supaFetch(path, {method:'POST', body:JSON.stringify({email, password})}, false);
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error_description || j.msg || j.message || ('HTTP '+r.status));
+  if(!j.access_token) throw new Error('服务器没返回 token —— Supabase 后台的「Confirm email」可能还开着');
+  setAuth({ access_token:j.access_token, refresh_token:j.refresh_token,
+            expires_at: Date.now() + (j.expires_in||3600)*1000,
+            user_id:j.user.id, email:j.user.email });
+}
+
+async function ensureToken(){
+  if(!AUTH) return false;
+  if(Date.now() < AUTH.expires_at - 60000) return true;
+  const r = await supaFetch('/auth/v1/token?grant_type=refresh_token',
+    {method:'POST', body:JSON.stringify({refresh_token:AUTH.refresh_token})}, false);
+  if(!r.ok){ setAuth(null); throw new Error('登录已过期，请重新登录'); }
+  const j = await r.json();
+  setAuth(Object.assign({}, AUTH, {
+    access_token:j.access_token,
+    refresh_token:j.refresh_token || AUTH.refresh_token,
+    expires_at: Date.now() + (j.expires_in||3600)*1000 }));
+  return true;
+}
+
+/* ── 字段级合并 ──
+   不能用 last-write-wins：手机练完半小时，电脑一开旧存档就把你覆盖了。
+   状态几乎全是单调增长的，所以逐字段取「更进一步」的那份，且幂等
+   （同一份数据重复同步不会把计数翻倍）。 */
+function mergeWord(a, b){
+  if(!a) return b; if(!b) return a;
+  return { lvl:  Math.max(a.lvl||0,   b.lvl||0),
+           seen: Math.max(a.seen||0,  b.seen||0),
+           wrong:Math.max(a.wrong||0, b.wrong||0) };
+}
+
+function mergeState(loc, rem){
+  if(!rem) return loc;
+  if(!loc) return rem;
+  const out = Object.assign({}, rem, loc);          // 本地为底，远端补缺字段
+  const mx = k => Math.max(loc[k]||0, rem[k]||0);
+
+  out.xp = mx('xp'); out.introPtr = mx('introPtr');
+  out.readPtr = mx('readPtr'); out.wrPtr = mx('wrPtr');
+
+  // 顺序数组一旦生成就锁定 —— 两边不一致会让出词/出题顺序整个错乱
+  out.introOrder = loc.introOrder || rem.introOrder || null;
+  out.readOrder  = loc.readOrder  || rem.readOrder  || null;
+  out.wrOrder    = loc.wrOrder    || rem.wrOrder    || null;
+
+  out.words = {};
+  new Set([...Object.keys(loc.words||{}), ...Object.keys(rem.words||{})])
+    .forEach(id => { out.words[id] = mergeWord((loc.words||{})[id], (rem.words||{})[id]); });
+
+  out.readLog = Object.assign({}, rem.readLog||{}, loc.readLog||{});
+  out.wrLog   = Object.assign({}, rem.wrLog||{},   loc.wrLog||{});
+
+  // 连击：以「最后达标日」更晚的一方为准，不取 max（否则断掉的连击会被复活）
+  const la = loc.lastGoalDay||'', lr = rem.lastGoalDay||'';
+  if(lr > la){ out.lastGoalDay = rem.lastGoalDay; out.streak = rem.streak||0; }
+  else if(la > lr){ out.lastGoalDay = loc.lastGoalDay; out.streak = loc.streak||0; }
+  else { out.lastGoalDay = loc.lastGoalDay||null; out.streak = Math.max(loc.streak||0, rem.streak||0); }
+
+  // 当天进度：同一天取大，跨天以更晚那天为准
+  const da = loc.day||'', dr = rem.day||'';
+  if(da === dr){ out.day = da; out.dailyDone = mx('dailyDone'); }
+  else if(dr > da){ out.day = rem.day; out.dailyDone = rem.dailyDone||0; }
+  else { out.day = loc.day; out.dailyDone = loc.dailyDone||0; }
+
+  // 未提交的写作草稿：先比日期，同日取写得更久的那份
+  const ca = loc.wrCur, cr = rem.wrCur;
+  if(!ca) out.wrCur = cr || null;
+  else if(!cr) out.wrCur = ca;
+  else if((cr.day||'') > (ca.day||'')) out.wrCur = cr;
+  else if((ca.day||'') > (cr.day||'')) out.wrCur = ca;
+  else out.wrCur = (cr.usedMs||0) > (ca.usedMs||0) ? cr : ca;
+
+  // 本机偏好不被远端覆盖
+  out.muted = loc.muted; out.sfx = loc.sfx || rem.sfx;
+  return out;
+}
+
+async function pullRemote(){
+  const r = await supaFetch('/rest/v1/wordrush_state?user_id=eq.'+AUTH.user_id+'&select=state,rev');
+  if(!r.ok) throw new Error('拉取失败 HTTP '+r.status);
+  return (await r.json())[0] || null;
+}
+
+async function pushRemote(state){
+  const r = await supaFetch('/rest/v1/wordrush_state?on_conflict=user_id', {
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=representation'},
+    body: JSON.stringify({ user_id:AUTH.user_id, state })
+  });
+  if(!r.ok) throw new Error('上传失败 HTTP '+r.status+' '+(await r.text()).slice(0,140));
+  return (await r.json().catch(()=>[]))[0] || null;
+}
+
+async function syncNow(){
+  if(!cloudReady() || syncing) return;
+  syncing = true; setSync('syncing');
+  try{
+    await ensureToken();
+    const rem = await pullRemote();
+    const before = JSON.stringify(S);
+    S = mergeState(S, rem ? rem.state : null);
+    localStorage.setItem(LS_KEY, JSON.stringify(S));
+    await pushRemote(S);
+    syncDirty = false; lastSyncAt = Date.now();
+    setSync('ok');
+    if(JSON.stringify(S) !== before){ rebuildDeck(); updateHUD(); updateReadBtn(); }
+  }catch(e){
+    syncDirty = true;
+    setSync(navigator.onLine ? 'err' : 'offline', e.message);
+  }finally{ syncing = false; }
+}
+
+/* save() 调用它：本地立刻落盘，云端防抖 3 秒再推 */
+function syncQueue(){
+  if(!cloudReady()) return;
+  syncDirty = true;
+  if(syncStatus !== 'syncing') setSync('pending');
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, SYNC_WAIT);
+}
+
+/* 离线转在线、切回前台、关页面前：补推 */
+addEventListener('online', () => { if(syncDirty) syncNow(); });
+addEventListener('visibilitychange', () => { if(document.visibilityState==='visible' && cloudReady()) syncNow(); });
+addEventListener('pagehide', () => {
+  if(!cloudReady() || !syncDirty) return;
+  // 用 fetch keepalive 而不是 sendBeacon：beacon 无法带 Authorization 头，
+  // 而 RLS 认的是用户 JWT，光有 apikey 会被策略挡掉。
+  fetch(SUPA_URL+'/rest/v1/wordrush_state?on_conflict=user_id', {
+    method:'POST', keepalive:true,
+    headers:{ 'apikey':SUPA_KEY, 'Authorization':'Bearer '+AUTH.access_token,
+              'Content-Type':'application/json', 'Prefer':'resolution=merge-duplicates' },
+    body: JSON.stringify({ user_id:AUTH.user_id, state:S })
+  }).catch(()=>{});
+});
+
 /* ═══════════════ 状态 ═══════════════ */
 function today(){ return new Date().toLocaleDateString('en-CA'); }  // YYYY-MM-DD 本地时区
 
@@ -318,7 +535,7 @@ function load(){
   try{ const s = JSON.parse(localStorage.getItem(LS_KEY)); return s && s.words ? s : fresh(); }
   catch{ return fresh(); }
 }
-function save(){ localStorage.setItem(LS_KEY, JSON.stringify(S)); }
+function save(){ localStorage.setItem(LS_KEY, JSON.stringify(S)); syncQueue(); }
 
 // 每日滚动 + 连击维护
 (function rollover(){
@@ -1260,12 +1477,105 @@ function showView(which){
   document.getElementById('vColl').classList.toggle('on', which==='coll');
   document.getElementById('vRead').classList.toggle('on', which==='read');
   document.getElementById('vWrite').classList.toggle('on', which==='write');
+  document.getElementById('vSync').classList.toggle('on', which==='sync');
+  if(which==='sync') renderSync();
   if(which==='coll') renderCollection();
   if(which==='play') resumePlay();
   if(which!=='read'&&which!=='write') window.scrollTo(0,0);
 }
 document.getElementById('btnColl').onclick=()=>showView('coll');
+document.getElementById('btnSync').onclick=()=>showView('sync');
+document.getElementById('syBack').onclick=()=>showView('play');
 document.getElementById('btnBack').onclick=()=>showView('play');
+
+/* ═══════════════ 云同步面板 ═══════════════ */
+let syTab = 'signin';
+
+function syStat(){
+  return { off:'未登录', pending:'待同步', syncing:'同步中…', ok:'已同步', err:'同步失败', offline:'离线（已排队）' }[syncStatus] || '—';
+}
+
+function renderSync(){
+  const body = document.getElementById('syBody');
+  const learned = Object.keys(S.words||{}).length;
+
+  if(!SUPA_URL || !SUPA_KEY){
+    body.innerHTML = `<div class="sy-box"><div class="sy-title">云同步未配置</div>
+      <div class="sy-msg info on">这个版本没有注入 Supabase 配置，进度只存在本机浏览器里。</div></div>`;
+    return;
+  }
+
+  if(!AUTH){
+    body.innerHTML = `
+      <div class="sy-box">
+        <div class="sy-title">登录后，手机和电脑的进度会自动互通</div>
+        <div class="sy-tabs">
+          <button class="sy-tab ${syTab==='signin'?'on':''}" data-t="signin">登录</button>
+          <button class="sy-tab ${syTab==='signup'?'on':''}" data-t="signup">首次注册</button>
+        </div>
+        <input class="sy-in" id="syEmail" type="email" autocomplete="email" placeholder="邮箱">
+        <input class="sy-in" id="syPw" type="password" autocomplete="current-password" placeholder="密码（至少 6 位）">
+        <button class="btn btn-p" id="syGo" style="margin-top:2px">${syTab==='signup'?'注册并同步 →':'登录 →'}</button>
+        <div class="sy-msg" id="syMsg"></div>
+      </div>
+      <div class="sy-box">
+        <div class="sy-title">本机当前进度</div>
+        <div class="sy-row"><span>已学词条</span><span>${learned}</span></div>
+        <div class="sy-row"><span>累计 XP</span><span>${S.xp||0}</span></div>
+        <div class="sy-row"><span>连击</span><span>${S.streak||0} 天</span></div>
+        <div class="sy-msg info on">登录时会把本机进度和云端<b>合并</b>，逐字段取更靠前的一方，不会互相覆盖。</div>
+      </div>`;
+
+    body.querySelectorAll('.sy-tab').forEach(b => b.onclick = () => { syTab = b.dataset.t; renderSync(); });
+    body.querySelector('#syGo').onclick = async () => {
+      const em = body.querySelector('#syEmail').value.trim();
+      const pw = body.querySelector('#syPw').value;
+      const msg = body.querySelector('#syMsg');
+      if(!em || pw.length < 6){ msg.className='sy-msg err on'; msg.textContent='请填邮箱，密码至少 6 位'; return; }
+      msg.className='sy-msg info on'; msg.textContent='处理中…';
+      try{
+        await authGo(syTab, em, pw);
+        await syncNow();
+        renderSync();
+      }catch(e){
+        msg.className='sy-msg err on'; msg.textContent = e.message;
+      }
+    };
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="sy-box">
+      <div class="sy-title">☁️ ${AUTH.email}</div>
+      <div class="sy-row"><span>状态</span><span>${syStat()}</span></div>
+      <div class="sy-row"><span>上次同步</span><span>${lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString('zh-CN') : '—'}</span></div>
+      <div class="sy-row"><span>已学词条</span><span>${learned}</span></div>
+      <div class="sy-row"><span>累计 XP</span><span>${S.xp||0}</span></div>
+      ${syncNote ? `<div class="sy-msg err on">${syncNote}</div>` : ''}
+      <button class="btn btn-p" id="syNow" style="margin-top:10px">立即同步 ↻</button>
+      <button class="btn btn-g" id="syOut">退出登录</button>
+    </div>
+    <div class="sy-box">
+      <div class="sy-title">备份</div>
+      <div class="sy-msg info on">免费版 Supabase 连续 7 天无活动会暂停项目。存一份本地副本更保险。</div>
+      <button class="btn btn-g" id="syExp" style="margin-top:8px">导出进度 JSON</button>
+    </div>`;
+
+  body.querySelector('#syNow').onclick = async () => { await syncNow(); renderSync(); };
+  body.querySelector('#syOut').onclick = () => {
+    if(!confirm('退出后本机进度仍保留在浏览器里，只是不再同步。确定？')) return;
+    setAuth(null); setSync('off'); renderSync();
+  };
+  body.querySelector('#syExp').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(S,null,2)], {type:'application/json'}));
+    a.download = `wordrush-${today()}.json`; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  };
+}
+
+/* 启动时若已登录，先拉一次云端（把另一台设备的进度合进来） */
+if(cloudReady()){ setSync('pending'); syncNow(); } else { paintSyncDot(); }
 document.getElementById('btnWrite').onclick=()=>openWriting();
 document.getElementById('wrBack').onclick=()=>showView('play');
 document.getElementById('btnMute').onclick=()=>{ S.muted=!S.muted; save(); document.getElementById('btnMute').textContent=S.muted?'🔇':'🔊'; if(S.muted) speechSynthesis.cancel(); };
