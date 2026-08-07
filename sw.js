@@ -1,14 +1,20 @@
-/* Word Rush service worker —— stale-while-revalidate
+/* Word Rush service worker
 
-   整个 app 就是一个 HTML 文件，所以缓存策略很简单：
-   命中缓存立刻返回（离线、弱网都能秒开），同时后台悄悄拉新版本，
-   下次打开就是新的。不用版本号做缓存失效 —— 每次成功的网络请求
-   都会顺手覆盖缓存。
+   两套策略：
+
+   1. 打开页面（navigate 请求）—— **网络优先，超时 NAV_TIMEOUT 回落缓存**。
+      整个 app 就是这一个 HTML。纯 stale-while-revalidate 的话，部署后第一次
+      打开拿到的还是旧版，要再开一次才更新 —— 用户在外地只会以为「改动没生效」。
+      网络优先让一次打开就是新版；超时回落保证弱网/离线照样秒开。
+
+   2. 其余同源 GET（图标、manifest）—— stale-while-revalidate，
+      这些几乎不变，先给缓存最快，后台顺手更新。
 
    关键约束：只碰同源的 GET。Supabase 的同步请求（跨域、且多为 POST）
    必须原样走网络，被缓存会造成「看起来同步了其实没上传」。 */
 
 const CACHE = 'wordrush';
+const NAV_TIMEOUT = 2500;   // 等网络的上限：再久不如先把缓存版本给用户
 const SHELL = ['./', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
@@ -40,14 +46,24 @@ self.addEventListener('fetch', e => {
     const fresh = fetch(req).then(res => {
       if (res && res.ok && res.type === 'basic') cache.put(req, res.clone());
       return res;
-    }).catch(() => null);
+    }).catch(() => null);                                 // 网络挂了当作「没结果」，不要抛出去
 
-    e.waitUntil(fresh);                                   // 返回缓存后仍要让后台更新跑完
-    if (cached) return cached;
-
-    const res = await fresh;
-    return res || new Response('离线，且本地没有缓存', {
+    const offline = () => new Response('离线，且本地没有缓存', {
       status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' }
     });
+
+    if (req.mode === 'navigate') {                        // 打开页面：网络优先
+      const timed = await Promise.race([
+        fresh,
+        new Promise(r => setTimeout(() => r(null), NAV_TIMEOUT)),
+      ]);
+      if (timed) return timed;
+      e.waitUntil(fresh);                                 // 超时了也让它跑完，把新版写进缓存
+      return cached || (await fresh) || offline();
+    }
+
+    e.waitUntil(fresh);                                   // 其余资源：返回缓存后让后台更新跑完
+    if (cached) return cached;
+    return (await fresh) || offline();
   })());
 });

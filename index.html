@@ -24,9 +24,14 @@
   body{
     background:radial-gradient(1200px 600px at 50% -10%, #1c2030 0%, var(--bg) 60%);
     color:var(--t1); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
-    display:flex; justify-content:center; overflow-x:hidden;
+    display:flex; justify-content:center; align-items:flex-start; overflow-x:hidden;
   }
-  #app{width:100%;max-width:480px;min-height:100vh;display:flex;flex-direction:column;padding:0 16px 18px}
+  /* align-items 必须是 flex-start：默认的 stretch 会把 #app 钉死成 body 的高度（100vh），
+     内容溢出到 #app 盒子外面，#app 的 padding-bottom 就落在了内容上方 ——
+     结果底部固定导航会盖住最后一屏内容。 */
+  /* 底部固定导航把内容挡住 —— 留出等高的下边距，safe-area 是给全面屏手势条的 */
+  #app{width:100%;max-width:480px;min-height:100vh;display:flex;flex-direction:column;
+       padding:0 16px calc(66px + env(safe-area-inset-bottom))}
 
   /* ── Top bar ─────────────────────────────── */
   .topbar{display:flex;align-items:center;gap:10px;padding:14px 2px 12px}
@@ -244,18 +249,105 @@
   .sy-row span:last-child{color:var(--t1);font-weight:700}
   .sy-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;background:var(--t3)}
   .sy-dot.ok{background:var(--green)} .sy-dot.pend{background:var(--gold)} .sy-dot.err{background:var(--red)}
-  #btnSync{position:relative}
+  /* 挂在底部「我的」标签上时，贴着图标右上角，别甩到标签框的角上 */
+  .nav-b .sy-dot{top:6px;right:auto;left:50%;margin-left:6px;width:7px;height:7px}
+
+  /* ── 底部导航 ──
+     模块入口原先全挤在顶栏，5 个图标在 340px 已经要缩到 31px；再加听力和数据必然溢出。
+     改成底部标签栏后顶栏只剩「目标环 + XP + 连击 + 静音」，横向压力消失，
+     标签按 flex:1 均分，加到 6 个在 320px 每个仍有 48px 点击区。 */
+  .navbar{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;
+          background:rgba(18,19,26,.94);backdrop-filter:blur(12px);border-top:1px solid var(--border);
+          padding-bottom:env(safe-area-inset-bottom)}
+  .nav-in{width:100%;max-width:480px;display:flex;padding:0 4px}
+  .nav-b{flex:1;min-width:0;position:relative;background:none;border:none;color:var(--t3);
+         font-family:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;
+         gap:3px;padding:8px 0 7px;transition:color .15s}
+  .nav-b .i{font-size:17px;line-height:1;filter:grayscale(1);opacity:.6;transition:.15s}
+  .nav-b .l{font-size:10px;font-weight:800;letter-spacing:.5px;white-space:nowrap}
+  .nav-b.on{color:var(--accent)}
+  .nav-b.on .i{filter:none;opacity:1;transform:translateY(-1px)}
+  .nav-b:active .i{transform:scale(.9)}
+  /* 徽标：错题数 / 同步状态。绝对定位在图标右上，不占布局宽度 */
+  .nav-b .bdg{position:absolute;top:4px;left:50%;margin-left:5px;min-width:15px;height:15px;padding:0 3px;
+              border-radius:8px;background:var(--red);color:#fff;font-size:9px;font-weight:900;
+              line-height:15px;text-align:center}
+  .nav-b .bdg.zero{display:none}
+
+  /* ── 数据面板 ─────────────────────────── */
+  .st-hero{display:flex;gap:9px;margin-bottom:12px}
+  .st-kpi{flex:1;min-width:0;background:var(--s2);border:1px solid var(--border);border-radius:15px;
+          padding:12px 8px;text-align:center}
+  .st-kpi .n{font-size:22px;font-weight:900;font-variant-numeric:tabular-nums;line-height:1.1}
+  .st-kpi .k{font-size:10.5px;color:var(--t3);margin-top:4px;letter-spacing:.4px}
+  .st-kpi.a .n{color:var(--teal)} .st-kpi.b .n{color:var(--gold)} .st-kpi.c .n{color:var(--coral)}
+  .st-box{background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:14px 14px 13px;margin-bottom:12px}
+  .st-title{font-size:13.5px;font-weight:800;margin-bottom:3px}
+  .st-sub{font-size:11.5px;color:var(--t3);line-height:1.5;margin-bottom:11px}
+  /* 30 天活跃柱：纯 CSS，不引图表库（零外部依赖是红线） */
+  .st-bars{display:flex;align-items:flex-end;gap:2px;height:66px}
+  .st-bars .b{flex:1;min-width:0;border-radius:2px 2px 0 0;background:var(--s3);position:relative}
+  .st-bars .b.has{background:linear-gradient(180deg,var(--teal),#2d8a6d)}
+  .st-bars .b.today{background:linear-gradient(180deg,var(--gold),var(--coral))}
+  .st-axis{display:flex;justify-content:space-between;font-size:10px;color:var(--t3);margin-top:6px}
+  /* 各模块正确率横条 */
+  .st-rate{display:flex;align-items:center;gap:9px;font-size:13px;margin-bottom:10px}
+  .st-rate:last-child{margin-bottom:0}
+  .st-rate .nm{width:56px;flex:none;color:var(--t2);font-weight:700;white-space:nowrap}
+  .st-rate .tr{flex:1;min-width:0;height:9px;background:var(--s3);border-radius:5px;overflow:hidden}
+  /* .fl 必须 block —— .tr 不是 flex 容器，inline 元素身上的 height:100% 不生效，条会整根消失 */
+  .st-rate .fl{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--teal),var(--green))}
+  .st-rate .fl.low{background:linear-gradient(90deg,#c4574f,var(--red))}
+  .st-rate .fl.mid{background:linear-gradient(90deg,#c99a3a,var(--gold))}
+  .st-rate .fl.plain{background:linear-gradient(90deg,#5f6ea8,var(--blue))}
+  .st-rate .vv{width:80px;flex:none;text-align:right;font-weight:800;font-variant-numeric:tabular-nums;
+               font-size:11.5px;white-space:nowrap}
+  .st-empty{font-size:13px;color:var(--t3);text-align:center;padding:16px 6px;line-height:1.6}
+  .st-link{display:flex;align-items:center;gap:11px;width:100%;background:var(--s2);border:1px solid var(--border);
+           border-radius:14px;padding:13px 14px;margin-bottom:9px;color:var(--t1);font-family:inherit;
+           font-size:14px;font-weight:700;cursor:pointer;text-align:left}
+  .st-link:active{transform:scale(.99)}
+  .st-link .ic{font-size:18px;flex:none}
+  .st-link .ar{margin-left:auto;color:var(--t3);font-weight:400}
+  .st-link .sub{font-size:11.5px;color:var(--t3);font-weight:600;margin-left:auto;margin-right:6px}
+
+  /* ── 错题本 ─────────────────────────── */
+  .ms-tabs{display:flex;gap:8px;margin-bottom:13px}
+  .ms-tab{flex:1;background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:10px 6px;
+          color:var(--t2);font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
+  .ms-tab.on{background:var(--accent);border-color:var(--accent);color:#12131a}
+  .ms-row{display:flex;align-items:center;gap:11px;background:var(--s2);border:1px solid var(--border);
+          border-radius:13px;padding:11px 13px;margin-bottom:8px}
+  .ms-row.fixed{opacity:.5}
+  .ms-row .em{font-size:19px;flex:none}
+  .ms-row .tx{min-width:0;flex:1}
+  /* .w/.z 是 span，不给 block 会挤在同一行（"adjust调整；适应"） */
+  .ms-row .w{display:block;font-size:15px;font-weight:800;line-height:1.25}
+  .ms-row .z{display:block;font-size:12px;color:var(--t2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ms-row .n{flex:none;font-size:11.5px;font-weight:800;color:var(--red);background:rgba(242,99,122,.13);
+             border-radius:8px;padding:4px 7px}
+  .ms-row .n.ok{color:var(--green);background:rgba(79,209,139,.13)}
+  .ms-q{background:var(--s2);border:1px solid var(--border);border-radius:13px;padding:12px 13px;margin-bottom:8px;
+        cursor:pointer}
+  .ms-q .src{font-size:11px;color:var(--t3);letter-spacing:.4px;margin-bottom:5px}
+  .ms-q .qq{font-size:13.5px;line-height:1.55;color:#e7e9f5}
+  .ms-q .mt{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11.5px;color:var(--t3)}
+  .ms-q .mt .n{color:var(--red);font-weight:800}
+  .ms-q .mt .n.ok{color:var(--green)}
+  /* 错词冲刺横幅：冲刺模式和日常背词长得一样，没有这条会不知道自己在哪个模式 */
+  .drill-bar{display:none;align-items:center;gap:7px;background:rgba(242,99,122,.11);border:1px solid var(--red);
+             border-radius:12px;padding:8px 11px;margin:6px 0 2px;font-size:12.5px;font-weight:800;color:var(--red)}
+  .drill-bar.on{display:flex}
+  .drill-bar .x{margin-left:auto;background:none;border:none;color:var(--red);opacity:.75;
+                font-family:inherit;font-size:12.5px;font-weight:800;cursor:pointer;padding:2px 4px}
 
   /* ── 窄屏顶栏 ──
-     图标从 4 个增到 5 个（加了 ☁️）后，375px 以下会溢出、按钮被挤出屏幕。
-     优先收间距、最后才缩按钮，尽量保住点击区。
+     顶栏现在只剩 目标环 + XP 条 + 连击 + 静音，横向很宽裕，只需微调间距。
      必须放在 .topbar/.icon-btn/.ring 之后 —— 媒体查询不增加特异性，
      写在前面会被后面的基础规则盖掉。 */
-  @media(max-width:430px){ .topbar{gap:6px} .chip{padding:6px 7px;font-size:12px} }
-  @media(max-width:365px){ .topbar{gap:4px} .icon-btn{width:34px;height:34px;font-size:15px} }
-  @media(max-width:340px){ .topbar{gap:3px} .icon-btn{width:31px;height:31px;font-size:14px;border-radius:10px}
-                           .ring{width:38px;height:38px} .ring svg{width:38px;height:38px}
-                           .chip{padding:5px 6px;font-size:11px} }
+  @media(max-width:430px){ .topbar{gap:8px} .chip{padding:6px 8px;font-size:12px} }
+  @media(max-width:340px){ .topbar{gap:6px} .chip{padding:5px 7px;font-size:11px}
+                           .nav-b .l{font-size:9px} .nav-b .i{font-size:16px} }
 </style>
 </head>
 <body>
@@ -271,15 +363,12 @@
       <div class="xp-track"><div class="xp-fill" id="xpFill"></div></div>
     </div>
     <div class="chip flame">🔥<span id="streakN">0</span></div>
-    <button class="icon-btn" id="btnRead" title="今日阅读">📖</button>
-    <button class="icon-btn" id="btnWrite" title="写作训练">✍️</button>
-    <button class="icon-btn" id="btnColl" title="收集册">🏆</button>
-    <button class="icon-btn" id="btnSync" title="云同步">☁️</button>
     <button class="icon-btn" id="btnMute" title="声音">🔊</button>
   </div>
 
   <!-- PLAY view -->
   <div class="view on" id="vPlay">
+    <div class="drill-bar" id="drillBar">🎯 错词冲刺 · 剩 <span id="drillN">0</span> 个<button class="x" id="drillX">退出</button></div>
     <div class="combo-bar"><div class="combo" id="combo"></div></div>
     <div class="stage"><div id="card"></div></div>
   </div>
@@ -308,6 +397,18 @@
     <div id="wrBody"></div>
   </div>
 
+  <!-- MISTAKES view -->
+  <div class="view" id="vMiss">
+    <div class="coll-head"><div class="coll-title">🎯 错题本</div><button class="icon-btn" id="msBack">✕</button></div>
+    <div id="msBody"></div>
+  </div>
+
+  <!-- STATS view -->
+  <div class="view" id="vStats">
+    <div class="coll-head"><div class="coll-title">📊 我的</div><button class="icon-btn" id="stBack">✕</button></div>
+    <div id="stBody"></div>
+  </div>
+
   <!-- SYNC view -->
   <div class="view" id="vSync">
     <div class="coll-head"><div class="coll-title">☁️ 云同步</div><button class="icon-btn" id="syBack">✕</button></div>
@@ -316,6 +417,15 @@
 
   <div class="brand">Word Rush · CELPIP</div>
 </div>
+
+<!-- 底部导航：模块入口。data-v 对应 showView() 的视图名 -->
+<nav class="navbar"><div class="nav-in" id="navIn">
+  <button class="nav-b on" data-v="play"><span class="i">📚</span><span class="l">背词</span></button>
+  <button class="nav-b" data-v="read"><span class="i" id="navReadIc">📖</span><span class="l">阅读</span></button>
+  <button class="nav-b" data-v="write"><span class="i">✍️</span><span class="l">写作</span></button>
+  <button class="nav-b" data-v="miss"><span class="i">🎯</span><span class="l">错题</span><span class="bdg zero" id="navMissBdg">0</span></button>
+  <button class="nav-b" data-v="stats"><span class="i">📊</span><span class="l">我的</span></button>
+</div></nav>
 
 <div class="overlay" id="overlay"><div class="reward"><div class="e" id="rE">🎉</div><div class="t" id="rT"></div><div class="m" id="rM"></div><button class="btn btn-p" id="rBtn" style="margin-top:0">继续 →</button><button class="btn btn-g" id="rBtn2" style="display:none">📖 读今日短文 →</button></div></div>
 <div id="cnf"></div>
@@ -341,6 +451,8 @@ const LEVELS = [0,60,180,380,680,1100,1700,2500];  // 升级 XP 阈值
 const STAGES = ['🥚','🐣','🐥','🐤','🐔'];          // 掌握等级 0..4
 const READ_XP = 15;              // 阅读每题 XP
 const READ_BONUS = 40;           // 阅读全对额外 XP
+const HIST_DAYS = 180;           // 每日统计保留天数
+const MISS_CLEAR = 2;            // 错题重做连对几次算「已消灭」
 const PART_LABEL = {0:'阅读理解',1:'Part 1 · 邮件往来',2:'Part 2 · 图表信息',3:'Part 3 · 信息类文章',4:'Part 4 · 观点评论'};
 /* 写作：官方限时 Task 1 = 27 分钟、Task 2 = 26 分钟；字数区间 150–200 */
 const WR_MIN = {task1:27, task2:26};
@@ -384,7 +496,8 @@ function setSync(st, note){
 }
 
 function paintSyncDot(){
-  const b = document.getElementById('btnSync'); if(!b) return;
+  // 同步入口挪进「我的」后，状态点挂在底部「我的」标签上，仍然一眼可见
+  const b = document.querySelector('.nav-b[data-v="stats"]'); if(!b) return;
   let d = b.querySelector('.sy-dot');
   if(!d){ d = document.createElement('span'); d.className = 'sy-dot'; b.appendChild(d); }
   d.className = 'sy-dot' + (syncStatus==='ok' ? ' ok'
@@ -455,6 +568,26 @@ function mergeState(loc, rem){
 
   out.readLog = Object.assign({}, rem.readLog||{}, loc.readLog||{});
   out.wrLog   = Object.assign({}, rem.wrLog||{},   loc.wrLog||{});
+
+  // 每日统计：按天并集，每天每个计数取 max。
+  // 不能求和 —— 求和不幂等，同一份数据反复同步会让曲线越滚越高。
+  // 代价是同一天在两台设备各练一半时会少算，但「多算」比「少算」危害大得多。
+  out.hist = {};
+  new Set([...Object.keys(loc.hist||{}), ...Object.keys(rem.hist||{})]).forEach(d => {
+    const a = (loc.hist||{})[d] || {}, b = (rem.hist||{})[d] || {};
+    out.hist[d] = { v:Math.max(a.v||0,b.v||0), vw:Math.max(a.vw||0,b.vw||0),
+                    r:Math.max(a.r||0,b.r||0), rw:Math.max(a.rw||0,b.rw||0),
+                    w:Math.max(a.w||0,b.w||0), x:Math.max(a.x||0,b.x||0) };
+  });
+  out.hist = pruneHist(out.hist);
+
+  // 阅读错题：并集，错次/重做对次取 max，日期取更晚的
+  out.missRead = {};
+  new Set([...Object.keys(loc.missRead||{}), ...Object.keys(rem.missRead||{})]).forEach(k => {
+    const a = (loc.missRead||{})[k] || {}, b = (rem.missRead||{})[k] || {};
+    out.missRead[k] = { d: (a.d||'') > (b.d||'') ? a.d : (b.d||a.d||null),
+                        n: Math.max(a.n||0, b.n||0), ok: Math.max(a.ok||0, b.ok||0) };
+  });
 
   // 连击：以「最后达标日」更晚的一方为准，不取 max（否则断掉的连击会被复活）
   const la = loc.lastGoalDay||'', lr = rem.lastGoalDay||'';
@@ -547,7 +680,27 @@ function fresh(){
   return { words:{}, xp:0, streak:0, lastGoalDay:null,
            day:today(), dailyDone:0, muted:false, sfx:'arcade', introPtr:0, introOrder:null,
            readOrder:null, readPtr:0, readToday:null, readLog:{},
-           wrOrder:null, wrPtr:0, wrCur:null, wrLog:{} };
+           wrOrder:null, wrPtr:0, wrCur:null, wrLog:{},
+           hist:{}, missRead:{} };
+}
+
+/* 每日统计：hist['YYYY-MM-DD'] = {v,vw,r,rw,w,x}
+   v/vw 词汇对错、r/rw 阅读对错、w 写作提交篇数、x 当日 XP。
+   只在用户实际作答时自增；合并时按天取 max（见 mergeState），所以重复同步不会虚高。 */
+function bump(k, n){
+  const t = today();
+  if(!S.hist) S.hist = {};
+  const d = S.hist[t] || (S.hist[t] = {v:0,vw:0,r:0,rw:0,w:0,x:0});
+  d[k] = (d[k]||0) + (n==null?1:n);
+}
+/* 只留最近 HIST_DAYS 天。按绝对日期裁剪，两台设备裁掉的是同一批，
+   不会出现「A 裁了 B 又合回来」的来回拉锯。 */
+function pruneHist(h){
+  if(!h) return {};
+  const cut = new Date(Date.now() - HIST_DAYS*864e5).toLocaleDateString('en-CA');
+  const out = {};
+  Object.keys(h).forEach(d => { if(d >= cut) out[d] = h[d]; });
+  return out;
 }
 let S = load();
 function load(){
@@ -564,6 +717,8 @@ function save(){ localStorage.setItem(LS_KEY, JSON.stringify(S)); syncQueue(); }
   if(!S.wrLog) S.wrLog = {};     // 旧存档补上写作字段
   if(S.wrPtr === undefined) S.wrPtr = 0;
   if(S.wrCur === undefined) S.wrCur = null;
+  S.hist = pruneHist(S.hist);    // 旧存档补上统计字段，同时裁掉过期天数
+  if(!S.missRead) S.missRead = {};
   if(S.day !== t){
     // 判断连击是否中断：上次达标日必须是「昨天」才续；否则清零
     const y = new Date(Date.now()-864e5).toLocaleDateString('en-CA');
@@ -776,7 +931,8 @@ function pickMode(v){
 function nextCard(){
   const canIntro = S.introPtr < S.introOrder.length;
   const activeUnmastered = deck.length;
-  const wantIntro = canIntro && (deck.length<3 || (cardsSinceIntro>=INTRO_EVERY && activeUnmastered<MAX_ACTIVE));
+  // 冲刺模式只把错词考到掌握，中途插新词会稀释掉这件事
+  const wantIntro = !missDrill && canIntro && (deck.length<3 || (cardsSinceIntro>=INTRO_EVERY && activeUnmastered<MAX_ACTIVE));
   if(wantIntro){
     const id=S.introOrder[S.introPtr++];
     if(!BYID.has(id)) return nextCard();   // 旧存档里的失效 id：跳过（introPtr 已前进，不会死循环）
@@ -873,7 +1029,7 @@ function applyCorrect(v, gold, msg){
   const mult=Math.floor(combo/5)+1;
   const xp=10*mult*(gold?2:1);
   addXP(xp); floatXP(xp, gold);
-  S.dailyDone++;
+  S.dailyDone++; bump('v');
   w.lvl=Math.min(4,(w.lvl||0)+1);
   if(w.lvl<4) requeue(v.id, Math.min(deck.length, 4+w.lvl*3));  // 等级越高，隔越久
   if(gold){ goldSound(); confetti(30); } else dingCombo(combo);
@@ -896,7 +1052,7 @@ function applyWrong(v, fbHTML){
   const w=S.words[v.id];
   document.getElementById('card').classList.add('shake');
   combo=0; showCombo(); buzzWrong();
-  w.wrong=(w.wrong||0)+1; w.lvl=Math.max(0,(w.lvl||1)-1);
+  w.wrong=(w.wrong||0)+1; w.lvl=Math.max(0,(w.lvl||1)-1); bump('vw');
   requeue(v.id, 2);   // 很快再考一次
   const fb=document.getElementById('fb');
   fb.className='feedback no'; fb.innerHTML=fbHTML;
@@ -950,7 +1106,8 @@ function answerProduce(v, gold, raw){
 function advance(){
   clearTimeout(advTimer); advTimer=null; pendingAdvance=false; locked=false;
   // 出卡万一报错也别把卡片卡死：退回「再来一轮」，用户点一下就能继续
-  try{ nextCard(); }catch(err){ console.error(err); rebuildDeck(); renderEmpty(); }
+  try{ nextCard(); }catch(err){ console.error(err); missDrill=false; rebuildDeck(); renderEmpty(); }
+  paintDrillBar();
 }
 
 // 回到练习页时自救：卡片停在「已作答」的死状态（切去阅读/写作/收集册，或从达标弹层直接去读短文）就自动翻下一张
@@ -962,7 +1119,7 @@ function resumePlay(){
   if(pendingAdvance || (locked && !hasBtn)) advance();
 }
 
-function addXP(n){ S.xp+=n; }
+function addXP(n){ S.xp+=n; bump('x', n); }   // 所有加分都走这里，统计 XP 只需挂这一处
 function floatXP(n, gold){
   const el=document.createElement('div'); el.className='xpfloat'; el.textContent='+'+n;
   if(gold) el.style.color='#fff';
@@ -1013,9 +1170,16 @@ function todayReading(){
 }
 function readDoneToday(){ return !!(S.readToday && S.readToday.day===today() && S.readToday.done); }
 function updateReadBtn(){
-  const b=document.getElementById('btnRead');
-  b.classList.toggle('done', readDoneToday());
-  b.textContent = readDoneToday() ? '📗' : '📖';
+  const ic=document.getElementById('navReadIc');
+  if(ic) ic.textContent = readDoneToday() ? '📗' : '📖';   // 读完当天变绿书，一眼看出今天还差不差这一项
+  paintMissBadge();
+}
+/* 错题标签上的红点数：未消灭的错词 + 未消灭的阅读错题 */
+function paintMissBadge(){
+  const el=document.getElementById('navMissBdg'); if(!el) return;
+  const n = missWords().length + missReadOpen().length;
+  el.textContent = n > 99 ? '99+' : n;
+  el.classList.toggle('zero', n===0);
 }
 
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -1059,9 +1223,10 @@ function passageHTML(r){
   return paras(r.text||'');
 }
 
-function bindGloss(){
-  const g=document.getElementById('rdGloss'); if(!g) return;
-  document.querySelectorAll('#rdPassage .vw').forEach(el=>{
+/* 默认作用于阅读页的 #rdPassage/#rdGloss；错题本要在自己的容器里复用，所以留了参数 */
+function bindGloss(rootId, glossId){
+  const g=document.getElementById(glossId||'rdGloss'); if(!g) return;
+  document.querySelectorAll('#'+(rootId||'rdPassage')+' .vw').forEach(el=>{
     el.onclick=()=>{
       const v=GLOSS.get(el.dataset.w); if(!v) return;
       g.innerHTML=`<b>${v.word}</b>${v.ipa?`<span class="g-ipa">${v.ipa}</span>`:''}<span class="g-zh">${v.zh}</span>`;
@@ -1111,18 +1276,40 @@ function renderReadQ(){
   document.querySelectorAll('#rdCard .opt').forEach(b=>{ b.onclick=()=>answerRead(+b.dataset.i, q.ans); });
 }
 
+/* 错题登记：答错就记一笔，重做连对 MISS_CLEAR 次算消灭（记录保留，只是不再催）。
+   答对时不新建条目 —— 只有错过的题才进错题本。 */
+function markMissRead(rid, qi, ok){
+  if(!S.missRead) S.missRead = {};
+  const k = rid + ':' + qi, e = S.missRead[k];
+  if(ok){
+    if(e && (e.ok||0) < MISS_CLEAR){ e.ok = (e.ok||0) + 1; }
+  } else {
+    S.missRead[k] = { d: today(), n: ((e&&e.n)||0) + 1, ok: 0 };
+  }
+}
+/* 错题 key = 短文 id + ':' + 题号。短文 id 是 "R001" 这样的字符串，不是数字 ——
+   用 lastIndexOf 切，别整个 split 后 Number() 掉。 */
+function missKeyParts(k){
+  const i = k.lastIndexOf(':');
+  return { rid: k.slice(0, i), qi: +k.slice(i+1) };
+}
+const missReadOpen = () => Object.entries(S.missRead||{})
+  .filter(([k,e]) => (e.ok||0) < MISS_CLEAR && RBYID.has(missKeyParts(k).rid));
+
 function answerRead(chosen, ans){
   if(rdLocked) return; rdLocked=true;
   const btns=document.querySelectorAll('#rdCard .opt'); btns.forEach(b=>b.disabled=true);
   const fb=document.getElementById('rdFb'), ok = chosen===ans;
   rdMarks[rdQi]=ok;
+  markMissRead(rdItem.id, rdQi, ok);
   if(ok){
     btns[chosen].classList.add('correct');
-    addXP(READ_XP); save(); updateHUD(); dingCombo(3);
+    bump('r'); addXP(READ_XP); save(); updateHUD(); dingCombo(3);
     fb.className='feedback ok'; fb.textContent=`✓ +${READ_XP} XP`;
   } else {
     btns[chosen].classList.add('wrong'); btns[ans].classList.add('correct');
     document.getElementById('rdCard').classList.add('shake'); buzzWrong();
+    bump('rw'); save();
     fb.className='feedback no'; fb.innerHTML=`正确答案：${'ABCD'[ans]}<div class="fb-mean">回到原文找一下这句的依据，比记答案有用</div>`;
   }
   const b=document.createElement('button');
@@ -1162,7 +1349,6 @@ function renderReadDone(already, n, total, perfect){
   document.getElementById('rdAgain').onclick=()=>{ rdMarks=[]; rdQi=0; renderReadIntro(); };
 }
 
-document.getElementById('btnRead').onclick=openReading;
 document.getElementById('rdBack').onclick=()=>showView('play');
 
 /* ═══════════════ 收集册 ═══════════════ */
@@ -1350,7 +1536,7 @@ function submitWriting(){
   c.usedMs = wrUsed(c); c.resumedAt=null;
   c.submitted = true; c.submittedAt = Date.now(); c.day = today();
   S.wrLog[c.id] = { day:c.day, words:wcount(c.draft), usedMs:c.usedMs };
-  addXP(WRITE_XP); save(); updateHUD(); chordUp(); confetti(40);
+  bump('w'); addXP(WRITE_XP); save(); updateHUD(); chordUp(); confetti(40);
   renderWrReview();
 }
 
@@ -1490,22 +1676,258 @@ function wrFallbackCopy(txt){               // file:// 下剪贴板可能被拦�
   ta.remove();
 }
 
+/* ═══════════════ 数据面板 ═══════════════ */
+/* 正确率一律用**终身累计**算（S.words / S.readLog），不用 hist —— hist 是这个版本才有的，
+   老存档没有历史，用它算会显示成 0%。hist 只负责「最近 N 天活跃度」这一件事。 */
+function vocabAcc(){
+  let n=0, wrong=0;
+  Object.values(S.words||{}).forEach(w=>{ n += w.seen||0; wrong += w.wrong||0; });
+  return { n, ok: Math.max(0, n-wrong) };
+}
+function readAcc(){
+  let n=0, ok=0;
+  Object.keys(S.readLog||{}).forEach(id=>{
+    const r=RBYID.get(id); if(!r) return;   // 短文 id 是字符串，别转数字
+    ok += S.readLog[id]||0; n += (r.questions||[]).length;
+  });
+  return { n, ok };
+}
+function histLast(days){
+  const out=[];
+  for(let i=days-1;i>=0;i--){
+    const d=new Date(Date.now()-i*864e5).toLocaleDateString('en-CA');
+    out.push([d, (S.hist||{})[d] || {v:0,vw:0,r:0,rw:0,w:0,x:0}]);
+  }
+  return out;
+}
+/* plain=true 用于「进度」类（已掌握 9/446）—— 进度低不代表做得差，
+   套正确率那套红黄配色会把「才刚开始」误报成「有问题」 */
+function rateRow(name, a, plain){
+  if(!a.n) return `<div class="st-rate"><span class="nm">${name}</span><span class="tr"></span><span class="vv" style="color:var(--t3)">还没练</span></div>`;
+  const p = a.ok/a.n*100;
+  const cls = plain ? 'plain' : p<60 ? 'low' : p<80 ? 'mid' : '';
+  return `<div class="st-rate"><span class="nm">${name}</span>
+    <span class="tr"><span class="fl ${cls}" style="width:${Math.max(p,1.5).toFixed(1)}%"></span></span>
+    <span class="vv">${p.toFixed(0)}% · ${a.ok}/${a.n}</span></div>`;
+}
+
+function renderStats(){
+  const days = histLast(30);
+  const peak = Math.max(1, ...days.map(([,h]) => (h.v||0)+(h.r||0)));
+  const activeDays = days.filter(([,h]) => (h.v||0)+(h.r||0)+(h.w||0) > 0).length;
+  const t = today();
+  const bars = days.map(([d,h])=>{
+    const val=(h.v||0)+(h.r||0);
+    const cls = d===t ? 'today' : val>0 ? 'has' : '';
+    // 有练但量少时给个 8% 的地板高度，否则柱子矮到看不见，像没练一样
+    const pct = val>0 ? Math.max(8, val/peak*100) : 4;
+    return `<div class="b ${cls}" style="height:${pct}%" title="${d}　答对 ${val}${h.w?`　写作 ${h.w} 篇`:''}"></div>`;
+  }).join('');
+
+  const wrN = Object.keys(S.wrLog||{}).length;
+  const wrWords = Object.values(S.wrLog||{}).reduce((s,x)=>s+(x.words||0),0);
+  const missN = missWords().length + missReadOpen().length;
+
+  document.getElementById('stBody').innerHTML=`
+    <div class="st-hero">
+      <div class="st-kpi a"><div class="n">${Math.min(S.dailyDone,GOAL)}<span style="font-size:13px;color:var(--t3)">/${GOAL}</span></div><div class="k">今日目标</div></div>
+      <div class="st-kpi b"><div class="n">${S.streak||0}</div><div class="k">连击天数</div></div>
+      <div class="st-kpi c"><div class="n">Lv ${levelOf(S.xp)+1}</div><div class="k">${S.xp||0} XP</div></div>
+    </div>
+
+    <div class="st-box">
+      <div class="st-title">近 30 天</div>
+      <div class="st-sub">30 天里练了 <b style="color:var(--teal)">${activeDays}</b> 天　·　柱高 = 当天答对的题数</div>
+      <div class="st-bars">${bars}</div>
+      <div class="st-axis"><span>30 天前</span><span>今天</span></div>
+    </div>
+
+    <div class="st-box">
+      <div class="st-title">正确率（累计）</div>
+      <div class="st-sub">按历来所有作答统计，不只是最近</div>
+      ${rateRow('词汇', vocabAcc())}
+      ${rateRow('阅读', readAcc())}
+      <div class="st-rate"><span class="nm">写作</span>
+        <span class="tr"></span>
+        <span class="vv" style="color:${wrN?'var(--t1)':'var(--t3)'}">${wrN?`${wrN} 篇 · 均 ${Math.round(wrWords/wrN)} 词`:'还没写'}</span></div>
+    </div>
+
+    <div class="st-box">
+      <div class="st-title">词库进度</div>
+      <div class="st-sub">已掌握 = 连续答对升到第 4 级（🐔）</div>
+      ${rateRow('已掌握', {n:VOCAB.length, ok:masteredCount()}, true)}
+      ${rateRow('已见过', {n:VOCAB.length, ok:introducedCount()}, true)}
+      ${rateRow('读过', {n:READING.length, ok:Object.keys(S.readLog||{}).length}, true)}
+    </div>
+
+    <button class="st-link" id="stMiss"><span class="ic">🎯</span>错题本<span class="sub">${missN?missN+' 个待消灭':'干净'}</span><span class="ar">›</span></button>
+    <button class="st-link" id="stColl"><span class="ic">🏆</span>收集册<span class="sub">${masteredCount()}/${VOCAB.length}</span><span class="ar">›</span></button>
+    <button class="st-link" id="stSync"><span class="ic">☁️</span>云同步<span class="sub">${syStat()}</span><span class="ar">›</span></button>`;
+
+  document.getElementById('stMiss').onclick=()=>showView('miss');
+  document.getElementById('stColl').onclick=()=>showView('coll');
+  document.getElementById('stSync').onclick=()=>showView('sync');
+}
+
+/* ═══════════════ 错题本 ═══════════════ */
+/* 错词直接从 S.words 推导（wrong>0 且没升到满级），不另存一份 ——
+   多存一份就要多一条合并规则，而且两份数据迟早对不上。 */
+function missWords(){
+  return Object.keys(S.words||{}).map(Number)
+    .filter(id => BYID.has(id) && (S.words[id].wrong||0)>0 && (S.words[id].lvl||0)<4)
+    .sort((a,b)=> (S.words[b].wrong||0)-(S.words[a].wrong||0) || (S.words[a].lvl||0)-(S.words[b].lvl||0));
+}
+function missWordsFixed(){
+  return Object.keys(S.words||{}).map(Number)
+    .filter(id => BYID.has(id) && (S.words[id].wrong||0)>0 && (S.words[id].lvl||0)>=4);
+}
+
+let msTab='word', msOpenKey=null;
+
+function renderMiss(){
+  const body=document.getElementById('msBody');
+  const open=missWords(), fixed=missWordsFixed(), rdOpen=missReadOpen();
+  body.innerHTML=`
+    <div class="ms-tabs">
+      <button class="ms-tab ${msTab==='word'?'on':''}" data-t="word">错词 ${open.length}</button>
+      <button class="ms-tab ${msTab==='read'?'on':''}" data-t="read">阅读错题 ${rdOpen.length}</button>
+    </div>
+    <div id="msList"></div>`;
+  body.querySelectorAll('.ms-tab').forEach(b=>b.onclick=()=>{ msTab=b.dataset.t; msOpenKey=null; renderMiss(); });
+  if(msTab==='word') renderMissWords(open, fixed); else renderMissRead(rdOpen);
+  paintMissBadge();
+}
+
+function renderMissWords(open, fixed){
+  const list=document.getElementById('msList');
+  if(!open.length && !fixed.length){
+    list.innerHTML=`<div class="st-empty">还没有错词。<br>答错的词会自动收进来，重新升到 🐔 就算消灭。</div>`;
+    return;
+  }
+  const row=(id,done)=>{
+    const v=BYID.get(id), w=S.words[id];
+    return `<div class="ms-row ${done?'fixed':''}" data-id="${id}">
+      <span class="em">${STAGES[Math.min(4,w.lvl||0)]}</span>
+      <span class="tx"><span class="w">${esc(v.word)}</span><span class="z">${esc(v.zh)}</span></span>
+      <span class="n ${done?'ok':''}">${done?'已消灭':'错 '+(w.wrong||0)+' 次'}</span>
+    </div>`;
+  };
+  list.innerHTML=`
+    ${open.length?`<button class="btn btn-p" id="msDrill" style="margin-top:0">🎯 只练这 ${Math.min(open.length,40)} 个错词 →</button>
+      <div class="rd-tip" style="margin-bottom:12px">冲刺模式不引入新词，只把错词轮着考到掌握</div>`:''}
+    ${open.map(id=>row(id,false)).join('')}
+    ${fixed.length?`<div class="wr-lbl" style="margin:16px 0 8px">已消灭 ${fixed.length}</div>${fixed.map(id=>row(id,true)).join('')}`:''}`;
+  const d=document.getElementById('msDrill'); if(d) d.onclick=startMissDrill;
+  list.querySelectorAll('.ms-row').forEach(r=>{ r.onclick=()=>{ const v=BYID.get(+r.dataset.id); if(v) speak(v.word); }; });
+}
+
+function renderMissRead(rdOpen){
+  const list=document.getElementById('msList');
+  if(!rdOpen.length){
+    list.innerHTML=`<div class="st-empty">阅读没有待消灭的错题。<br>答错的题会收进来，重做连对 ${MISS_CLEAR} 次就消失。</div>`;
+    return;
+  }
+  list.innerHTML=rdOpen.map(([k,e])=>{
+    const {rid,qi}=missKeyParts(k);
+    const r=RBYID.get(rid), q=(r.questions||[])[qi];
+    if(!q) return '';
+    const opened = msOpenKey===k;
+    return `<div class="ms-q" data-k="${k}">
+      <div class="src">${esc(r.title)}　·　第 ${qi+1} 题</div>
+      <div class="qq">${esc(q.q)}</div>
+      ${opened?`
+        <div class="rd-passage small" id="msPsg-${k.replace(':','-')}" style="margin-top:10px">${passageHTML(r)}</div>
+        <div class="rd-gloss" id="msGloss-${k.replace(':','-')}"></div>
+        <div class="opts" style="margin-top:10px">${q.opts.map((o,i)=>`<button class="opt" data-i="${i}"><span class="k">${'ABCD'[i]}</span><span>${esc(o)}</span></button>`).join('')}</div>
+        <div class="feedback" id="msFb-${k.replace(':','-')}"></div>`
+      :`<div class="mt">错 <span class="n">${e.n}</span> 次　·　已连对 <span class="n ${e.ok?'ok':''}">${e.ok||0}</span>/${MISS_CLEAR}　·　点开重做 ›</div>`}
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('.ms-q').forEach(c=>{
+    const k=c.dataset.k;
+    if(msOpenKey!==k){ c.onclick=()=>{ msOpenKey=k; renderMiss(); }; return; }
+    const {rid,qi}=missKeyParts(k);
+    const q=(RBYID.get(rid).questions||[])[qi];
+    const sfx=k.replace(':','-');
+    bindGloss('msPsg-'+sfx, 'msGloss-'+sfx);
+    c.querySelectorAll('.opt').forEach(b=>{
+      b.onclick=ev=>{
+        ev.stopPropagation();
+        const btns=c.querySelectorAll('.opt'); if(btns[0].disabled) return;
+        btns.forEach(x=>x.disabled=true);
+        const chosen=+b.dataset.i, ok=chosen===q.ans, fb=document.getElementById('msFb-'+sfx);
+        // 重做不加 XP、不计进 hist —— 那是复习，算进正确率会把真实水平洗白
+        markMissRead(rid, qi, ok); save();
+        if(ok){
+          btns[chosen].classList.add('correct'); dingCombo(3);
+          const e=S.missRead[k];
+          fb.className='feedback ok';
+          fb.innerHTML=(e.ok>=MISS_CLEAR?'✓ 连对 '+MISS_CLEAR+' 次，这题消灭了 🎉':`✓ 对了　·　再连对 ${MISS_CLEAR-e.ok} 次就消灭`);
+        } else {
+          btns[chosen].classList.add('wrong'); btns[q.ans].classList.add('correct'); buzzWrong();
+          fb.className='feedback no';
+          fb.innerHTML=`正确答案：${'ABCD'[q.ans]}<div class="fb-mean">连对次数已清零，回原文找依据再做一次</div>`;
+        }
+        const nx=document.createElement('button');
+        nx.className='btn btn-g'; nx.textContent='收起 →';
+        nx.onclick=ev2=>{ ev2.stopPropagation(); msOpenKey=null; renderMiss(); };
+        c.appendChild(nx);
+        paintMissBadge();
+      };
+    });
+  });
+}
+
+/* ── 错词冲刺 ── */
+let missDrill=false;
+function paintDrillBar(){
+  const b=document.getElementById('drillBar'); if(!b) return;
+  b.classList.toggle('on', missDrill);
+  if(missDrill) document.getElementById('drillN').textContent=deck.length;
+}
+function startMissDrill(){
+  const ids=missWords(); if(!ids.length) return;
+  missDrill=true; deck=ids.slice(0,40); lastQuizId=null;
+  clearTimeout(advTimer); advTimer=null; pendingAdvance=false; locked=false;
+  showView('play'); nextCard(); paintDrillBar();
+}
+function endMissDrill(){ missDrill=false; rebuildDeck(); paintDrillBar(); advance(); }
+document.getElementById('drillX').onclick=endMissDrill;
+
+const VIEWS = { play:'vPlay', coll:'vColl', read:'vRead', write:'vWrite',
+                miss:'vMiss', stats:'vStats', sync:'vSync' };
+/* 底部只有 5 个标签，收集册和云同步是「我的」的下级页 —— 进去时高亮回落到「我的」，
+   否则底部会一个都不亮，看不出自己在哪 */
+const NAV_OF = { play:'play', read:'read', write:'write', miss:'miss',
+                 stats:'stats', coll:'stats', sync:'stats' };
+
 function showView(which){
   if(which!=='write') wrLeave();
-  document.getElementById('vPlay').classList.toggle('on', which==='play');
-  document.getElementById('vColl').classList.toggle('on', which==='coll');
-  document.getElementById('vRead').classList.toggle('on', which==='read');
-  document.getElementById('vWrite').classList.toggle('on', which==='write');
-  document.getElementById('vSync').classList.toggle('on', which==='sync');
-  if(which==='sync') renderSync();
-  if(which==='coll') renderCollection();
-  if(which==='play') resumePlay();
+  Object.keys(VIEWS).forEach(k => {
+    const el = document.getElementById(VIEWS[k]);
+    if(el) el.classList.toggle('on', k===which);
+  });
+  document.querySelectorAll('.nav-b').forEach(b => b.classList.toggle('on', b.dataset.v===NAV_OF[which]));
+  if(which==='sync')  renderSync();
+  if(which==='coll')  renderCollection();
+  if(which==='miss')  renderMiss();
+  if(which==='stats') renderStats();
+  if(which==='play')  resumePlay();
   if(which!=='read'&&which!=='write') window.scrollTo(0,0);
 }
-document.getElementById('btnColl').onclick=()=>showView('coll');
-document.getElementById('btnSync').onclick=()=>showView('sync');
-document.getElementById('syBack').onclick=()=>showView('play');
-document.getElementById('btnBack').onclick=()=>showView('play');
+document.querySelectorAll('.nav-b').forEach(b => {
+  b.onclick = () => {
+    const v = b.dataset.v;
+    if(v==='read')       openReading();     // 这两个要先定当天的题再切页
+    else if(v==='write') openWriting();
+    else showView(v);
+  };
+});
+document.getElementById('btnBack').onclick=()=>showView('stats');   // 收集册 / 云同步都是从「我的」进来的
+document.getElementById('syBack').onclick=()=>showView('stats');
+document.getElementById('msBack').onclick=()=>showView('play');
+document.getElementById('stBack').onclick=()=>showView('play');
 
 /* ═══════════════ 云同步面板 ═══════════════ */
 let syTab = 'signin';
@@ -1600,22 +2022,23 @@ if(cloudReady()){ setSync('pending'); syncNow(); } else { paintSyncDot(); }
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
-document.getElementById('btnWrite').onclick=()=>openWriting();
 document.getElementById('wrBack').onclick=()=>showView('play');
 document.getElementById('btnMute').onclick=()=>{ S.muted=!S.muted; save(); document.getElementById('btnMute').textContent=S.muted?'🔇':'🔊'; if(S.muted) speechSynthesis.cancel(); };
 
 /* ═══════════════ 空状态 ═══════════════ */
 function renderEmpty(){
   locked=false;
+  const drill=missDrill;
   document.getElementById('card').className='card pop';
   document.getElementById('card').innerHTML=`
     <div class="learn-body" style="padding:20px 0">
-      <div style="font-size:52px">✅</div>
-      <div style="font-size:19px;font-weight:900;margin-top:10px">当前这批都复习完啦！</div>
-      <div class="sub" style="font-style:normal;color:var(--t2);margin-top:8px">休息一下，晚点再来会有更多词。</div>
+      <div style="font-size:52px">${drill?'🎯':'✅'}</div>
+      <div style="font-size:19px;font-weight:900;margin-top:10px">${drill?'这批错词全部消灭！':'当前这批都复习完啦！'}</div>
+      <div class="sub" style="font-style:normal;color:var(--t2);margin-top:8px">${drill?'它们已经升到 🐔，从错题本里消失了。':'休息一下，晚点再来会有更多词。'}</div>
     </div>
-    <button class="btn btn-p" id="againBtn">再来一轮 →</button>`;
-  document.getElementById('againBtn').onclick=()=>{ rebuildDeck(); advance(); };
+    <button class="btn btn-p" id="againBtn">${drill?'回到日常背词 →':'再来一轮 →'}</button>`;
+  document.getElementById('againBtn').onclick=()=>{ missDrill=false; rebuildDeck(); paintDrillBar(); advance(); };
+  if(drill){ confetti(70); chordUp(); }
 }
 
 /* ═══════════════ 键盘 ═══════════════ */
