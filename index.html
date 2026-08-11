@@ -1638,6 +1638,9 @@ Object.defineProperty(window, 'RS', { get: RSg });
 
 // 解锁页是阅读和写作共用的。解完要回到进来的那一边，不能一律回阅读。
 let rsAfterUnlock = null;
+/* 解锁页的「返回」要回到点它的那一边。原先靠 `back?openWriting():openReading()` 猜，
+   写作那条对，听力和错题本进来的就会被扔到写作页去。改成来源自己说清楚。 */
+let rsUnlockCancel = null;
 
 const rsKey = (s,p) => `${s.id}:${p.part}`;
 const rsGet = (s,p) => (S.rsLog||{})[rsKey(s,p)] || null;
@@ -1667,11 +1670,12 @@ function renderRsUnlock(){
     </div>
     <button class="btn btn-g" id="rsBack">← 返回</button>`;
   const inp=document.getElementById('rsPw'), msg=document.getElementById('rsPwMsg');
-  const back = rsAfterUnlock;                 // 记下来源，成功或返回都回到那一边
+  const back = rsAfterUnlock;                 // 记下来源，成功后回到那一边
+  const cancel = rsUnlockCancel;              // 放弃时回哪儿（没说就回阅读）
   const go=async()=>{
     msg.textContent='解锁中…';
     try{
-      if(await unlockProtected(inp.value)){ rsAfterUnlock=null; (back||renderRsSets)(); }
+      if(await unlockProtected(inp.value)){ rsAfterUnlock=null; rsUnlockCancel=null; (back||renderRsSets)(); }
       else { msg.textContent='密码不对'; inp.select(); }
     }catch(e){
       msg.textContent = e && e.message==='NO_GZIP'
@@ -1681,7 +1685,8 @@ function renderRsUnlock(){
   };
   document.getElementById('rsPwGo').onclick=go;
   inp.onkeydown=e=>{ if(e.key==='Enter') go(); };
-  document.getElementById('rsBack').onclick=()=>{ rsAfterUnlock=null; back?openWriting():openReading(); };
+  document.getElementById('rsBack').onclick=()=>{
+    rsAfterUnlock=null; rsUnlockCancel=null; (cancel||openReading)(); };
   inp.focus();
 }
 
@@ -1876,15 +1881,17 @@ function bindRsQ(labels){
       });
       document.getElementById('rsE'+k).innerHTML=
         `<div class="rs-mark">${right?'✅ 正确':'❌ 错了'}</div>`+rsExpHTML(q);
-      // 不写进 S.missRead：错题本用 RBYID.has(rid) 过滤，真题 id 不在里面会被
-      // missOpen() 静默滤掉 —— 条目永远不显示，却一直占着存档跟着同步来回传。
-      // 错题要进错题本得先让它认识真题这一路 id，那是另一件事。
+      // 进错题本。key 的 rid 就是 rsKey（`RS-05:1`），missItem() 认这一路，
+      // 未解锁时显示成「🔒 真题错题」而不是被静默滤掉
+      markMiss('missRead', rsKey(rsSet,p), k, right);
     });
     document.querySelectorAll('.rs-rev').forEach(b=>b.remove());
     document.getElementById('rsResult').innerHTML=
-      `<div class="wr-lbl" style="margin-top:12px">得分 ${ok} / ${n}</div>`;
+      `<div class="wr-lbl" style="margin-top:12px">得分 ${ok} / ${n}${
+        ok<n?`　·　${n-ok} 道已进错题本`:''}</div>`;
     sub.remove();
     rsSave(ok, n);
+    paintMissBadge();
   };
   const all=document.getElementById('rsAllDone');
   if(all) all.onclick=()=>{
@@ -1960,10 +1967,79 @@ function missKeyParts(k){
   const i = k.lastIndexOf(':');
   return { rid: k.slice(0, i), qi: +k.slice(i+1) };
 }
-const missOpen = (store, byid) => Object.entries(store||{})
-  .filter(([k,e]) => (e.ok||0) < MISS_CLEAR && byid.has(missKeyParts(k).rid));
-const missReadOpen = () => missOpen(S.missRead, RBYID);
-const missLsOpen   = () => missOpen(S.missLs,   LBYID);
+/* 错题本要认**两路** id：
+     R001 / L001   —— 每日短文和每日听力，明文内联，任何时候都取得到
+     RS-05:1 / LX-1-1-P1 —— 真题，在加密载荷里，**没解锁就取不到**
+   真题那一路的 rid 自带冒号（rsKey 就是 `套id:part`），而 missKeyParts 用
+   lastIndexOf(':') 切，正好切得对，key 格式不用改。
+
+   未解锁时不能把这些条目当成脏数据滤掉 —— 密钥存在 localStorage 里、不跟着云同步走，
+   换台设备第一次打开就是未解锁状态。滤掉的话红点数会在两台设备上不一样，
+   而且用户会以为错题丢了。所以未解锁时返回 {locked:true}：条目还在、还计数，
+   只是点开时提示去解锁。 */
+let _rsIdx = null, _rsIdxSrc = false, _lxIdx = null, _lxIdxSrc = false;
+function rsQIndex(){
+  if(_rsIdxSrc === PROTECTED) return _rsIdx;
+  _rsIdxSrc = PROTECTED; _rsIdx = new Map();
+  RSg().forEach(s => s.parts.forEach(p => _rsIdx.set(rsKey(s,p), {s,p})));
+  return _rsIdx;
+}
+function lxIndex(){
+  if(_lxIdxSrc === PROTECTED) return _lxIdx;
+  _lxIdxSrc = PROTECTED; _lxIdx = new Map();
+  // 直接读 PROTECTED，不走 LX() —— 那个 const 定义在本函数后面，
+  // 而 paintMissBadge() 在启动时就会被调到，会撞上暂时性死区
+  ((PROTECTED && PROTECTED.listening) || []).forEach(x => _lxIdx.set(x.id, x));
+  return _lxIdx;
+}
+
+/* 把四种题统一成错题本渲染器认得的形状。取不到返回 null（真·脏数据，该滤掉）。 */
+function missItem(field, rid, qi){
+  const isLs = field === 'missLs';
+  if(isLs && /^LX-/.test(rid)){
+    if(!PROTECTED) return { locked:true };
+    const it = lxIndex().get(rid), q = it && it.questions[qi];
+    if(!q) return null;
+    return { title:`真题 ${it.set} · Part ${it.part}`, q:q.q, opts:q.opts, ans:q.ans,
+             why:q.why||'', script:it.script, speakers:it.speakers };
+  }
+  if(!isLs && /^RS-/.test(rid)){
+    if(!PROTECTED) return { locked:true };
+    const hit = rsQIndex().get(rid);
+    const q = hit && hit.p.questions[qi];
+    if(!q) return null;
+    // 真题的两种可作答形态：四选项（opts）和段落匹配（选项就是原文 A–E 段）
+    const labels = rsHasLabels(hit.p) ? hit.p.passage.paragraphs.map(x=>x.label) : [];
+    const opts = q.opts ? q.opts.map(o=>o.text) : labels;
+    const ans  = q.opts ? q.opts.findIndex(o=>o.L===q.ansL) : labels.indexOf(q.answer);
+    if(!opts.length || ans < 0) return null;
+    /* 标题要能区分是哪一套 —— 只写 Part 几的话，两套的 Part 1 在列表里长得一模一样。
+       只掐掉套题标题的固定头尾，**不去提取卷号**：提取的话
+       「官网 Practice Test 1（1-1）」和「旧版真题 1-1」会双双缩成「1-1」撞在一起。 */
+    const tag = (hit.s.title || hit.s.id)
+      .replace(/\s*阅读精读总览\s*$/, '').replace(/^官网\s*/, '').trim() || hit.s.id;
+    return { title:`📕 ${tag} · Part ${hit.p.part}`,
+             q:q.stem || `（原文中的空格 ${q.no}）`, opts, ans,
+             why:[q.why, q.evidence && '原文证据：'+q.evidence, q.trap && '错项陷阱：'+q.trap]
+                   .filter(Boolean).join('\n'),
+             passage:rsPassageHTML(hit.p) };
+  }
+  const it = (isLs ? LBYID : RBYID).get(rid);
+  const q = it && it.questions[qi];
+  if(!q) return null;
+  return { title:it.title, q:q.q, opts:q.opts, ans:q.ans, why:q.why||'',
+           script:it.script, speakers:it.speakers,
+           passage:isLs ? '' : passageHTML(it), gloss:!isLs };
+}
+
+const missOpen = (store, field) => Object.entries(store||{})
+  .filter(([k,e]) => {
+    if((e.ok||0) >= MISS_CLEAR) return false;
+    const {rid,qi} = missKeyParts(k);
+    return !!missItem(field, rid, qi);
+  });
+const missReadOpen = () => missOpen(S.missRead, 'missRead');
+const missLsOpen   = () => missOpen(S.missLs,   'missLs');
 
 function answerRead(chosen, ans){
   if(rdLocked) return; rdLocked=true;
@@ -2119,7 +2195,8 @@ function renderWrPick(){
   const gb=document.getElementById('wrGuide'); if(gb) gb.onclick=()=>renderWrGuide();
   const gr=document.getElementById('wrGram'); if(gr) gr.onclick=()=>renderGrHome();
   const xb=document.getElementById('wxGo');
-  if(xb) xb.onclick=()=>{ PROTECTED ? renderWxSets() : (rsAfterUnlock=renderWxSets, renderRsUnlock()); };
+  if(xb) xb.onclick=()=>{ PROTECTED ? renderWxSets()
+    : (rsAfterUnlock=renderWxSets, rsUnlockCancel=openWriting, renderRsUnlock()); };
 }
 
 /* ═══════════════ 写作真题（加密题库）═══════════════
@@ -2963,7 +3040,7 @@ function renderLsIntro(){
   const lxb = document.getElementById('lxGo');
   if(lxb) lxb.onclick = () => {
     if(PROTECTED) renderLxSets();
-    else { rsAfterUnlock = renderLxSets; renderRsUnlock(); }
+    else { rsAfterUnlock = renderLxSets; rsUnlockCancel = openListening; renderRsUnlock(); }
   };
   const st = document.getElementById('lsStart');
   // iOS 要求首个 speak() 直接发生在点击回调里，不能塞进 await 之后
@@ -3278,28 +3355,37 @@ function renderMissWords(open, fixed){
 
 /* 阅读和听力错题共用这个渲染器。差别只有两处：
    阅读题在作答时就能看原文（本来就是读的），听力题的原文要等答完才放 —— 否则等于看着读。
-   阅读题库没有解析字段，听力题库有，所以解析按题目自带的 why 走。 */
+   每日题库和真题的字段形状不一样（真题是 stem/opts[{L,text}]/ansL），
+   统一由 missItem() 抹平，这里只认抹平后的形状。 */
 function renderMissQ(list_, kind){
   const list=document.getElementById('msList');
   const isLs = kind==='ls';
-  const BY = isLs ? LBYID : RBYID;
   const field = isLs ? 'missLs' : 'missRead';
   if(!list_.length){
     list.innerHTML=`<div class="st-empty">${isLs?'听力':'阅读'}没有待消灭的错题。<br>答错的题会收进来，重做连对 ${MISS_CLEAR} 次就消失。</div>`;
     return;
   }
+  // key 里可能有两个冒号（真题 rid 自带一个），元素 id 里不能留，全换掉
+  const sfxOf = k => k.replace(/[^A-Za-z0-9]/g,'-');
   list.innerHTML=list_.map(([k,e])=>{
     const {rid,qi}=missKeyParts(k);
-    const it=BY.get(rid), q=(it.questions||[])[qi];
+    const q=missItem(field,rid,qi);
     if(!q) return '';
-    const opened = msOpenKey===k, sfx=k.replace(':','-');
+    const opened = msOpenKey===k, sfx=sfxOf(k);
+    if(q.locked){
+      return `<div class="ms-q" data-k="${k}">
+        <div class="src">🔒 真题错题　·　第 ${qi+1} 题</div>
+        <div class="qq">解锁真题题库后可以在这里重做</div>
+        <div class="mt">错 <span class="n">${e.n}</span> 次　·　已连对 <span class="n ${e.ok?'ok':''}">${e.ok||0}</span>/${MISS_CLEAR}　·　点这里解锁 ›</div>
+      </div>`;
+    }
     return `<div class="ms-q" data-k="${k}">
-      <div class="src">${esc(it.title)}　·　第 ${qi+1} 题</div>
+      <div class="src">${esc(q.title)}　·　第 ${qi+1} 题</div>
       <div class="qq">${esc(q.q)}</div>
       ${opened?`
         ${isLs
           ? `<div class="rd-tip" style="text-align:left;margin:10px 0 0">凭印象作答，原文和解析答完再给。</div>`
-          : `<div class="rd-passage small" id="msPsg-${sfx}" style="margin-top:10px">${passageHTML(it)}</div>
+          : `<div class="rd-passage small" id="msPsg-${sfx}" style="margin-top:10px">${q.passage||''}</div>
              <div class="rd-gloss" id="msGloss-${sfx}"></div>`}
         <div class="opts" style="margin-top:10px">${q.opts.map((o,i)=>`<button class="opt" data-i="${i}"><span class="k">${'ABCD'[i]}</span><span>${esc(o)}</span></button>`).join('')}</div>
         <div class="feedback" id="msFb-${sfx}"></div>
@@ -3310,11 +3396,14 @@ function renderMissQ(list_, kind){
 
   list.querySelectorAll('.ms-q').forEach(c=>{
     const k=c.dataset.k;
-    if(msOpenKey!==k){ c.onclick=()=>{ msOpenKey=k; renderMiss(); }; return; }
     const {rid,qi}=missKeyParts(k);
-    const it=BY.get(rid), q=(it.questions||[])[qi];
-    const sfx=k.replace(':','-');
-    if(!isLs) bindGloss('msPsg-'+sfx, 'msGloss-'+sfx);
+    const q=missItem(field,rid,qi);
+    if(!q) return;
+    const toMiss = ()=>showView('miss');
+    if(q.locked){ c.onclick=()=>{ rsAfterUnlock=toMiss; rsUnlockCancel=toMiss; renderRsUnlock(); }; return; }
+    if(msOpenKey!==k){ c.onclick=()=>{ msOpenKey=k; renderMiss(); }; return; }
+    const sfx=sfxOf(k);
+    if(!isLs && q.gloss) bindGloss('msPsg-'+sfx, 'msGloss-'+sfx);
     c.querySelectorAll('.opt').forEach(b=>{
       b.onclick=ev=>{
         ev.stopPropagation();
@@ -3339,8 +3428,8 @@ function renderMissQ(list_, kind){
           after.innerHTML=`
             ${q.why?`<div class="ls-why" style="margin-top:10px">${esc(q.why)}</div>`:''}
             ${isLs?`<div class="wr-lbl" style="margin:12px 0 6px">原文</div>
-              <div class="ls-script">${it.script.map(l=>{
-                const sp=(it.speakers||[]).find(x=>x.s===l.s)||{name:l.s};
+              <div class="ls-script">${(q.script||[]).map(l=>{
+                const sp=(q.speakers||[]).find(x=>x.s===l.s)||{name:l.s};
                 return `<div class="ls-ln"><span class="nm">${esc(sp.name)}</span><span class="tt">${esc(l.t)}</span></div>`;
               }).join('')}</div>`:''}`;
         }
@@ -3564,9 +3653,16 @@ updateHUD();
 updateReadBtn();
 nextCard();   // 打开即出卡片
 
-// 真题题库：上次解锁过就用缓存的密钥静默解开，解不开就当没解锁，不打扰用户。
-// 放在最后且不 await —— 解密不能挡住首屏出卡片。
-if(LOCKED) restoreProtected().catch(()=>{});
+/* 真题题库：上次解锁过就用缓存的密钥静默解开，解不开就当没解锁，不打扰用户。
+   放在最后且不 await —— 解密不能挡住首屏出卡片。
+   解开之后要补刷一次错题本：真题错题在解锁前只能显示成「🔒」，
+   而这里是异步的，用户完全可能在解密完成之前就已经站在错题本页上了。 */
+if(LOCKED) restoreProtected().then(ok=>{
+  if(!ok) return;
+  paintMissBadge();
+  const el=document.getElementById(VIEWS.miss);
+  if(el && el.classList.contains('on')) renderMiss();
+}).catch(()=>{});
 </script>
 </body>
 </html>
