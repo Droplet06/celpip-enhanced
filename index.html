@@ -1355,6 +1355,14 @@ function pickMode(v){
   return modes[rint(modes.length)];
 }
 function nextCard(){
+  /* 兜底：introOrder 正常是启动时的 rollover() 生成的，走到这里不该是空。
+     但它一旦是 null，这一行就抛异常 —— 而 nextCard() 在启动时就会跑，
+     结果是**整个 App 白屏起不来**，用户除了清浏览器数据没有别的办法。
+     mergeState 里 introOrder 有「首次生成后锁定」的规则，两边都没有时会留 null
+     （appendMissingIds(null) 也返回 null），所以这条路理论上存在。
+     与其赌它到不了，不如就地补一份 —— 顺序会和另一台设备不一致，
+     但「顺序不一样」比「打不开」轻得多。 */
+  if(!S.introOrder || !S.introOrder.length){ S.introOrder = shuffle(VOCAB.map(v=>v.id)); save(); }
   const canIntro = S.introPtr < S.introOrder.length;
   const activeUnmastered = deck.length;
   // 冲刺模式只把错词考到掌握，中途插新词会稀释掉这件事
@@ -1912,7 +1920,7 @@ function bindRsQ(labels){
   });
   const sub=document.getElementById('rsSubmit');
   if(sub) sub.onclick=()=>{
-    let ok=0, n=0;
+    let ok=0, n=0, blank=0;
     p.questions.forEach((q,k)=>{
       /* 一个 Part 里可能**混着**可作答和只能复盘的题（解析册只补上了一部分），
          所以分母只数可作答的那些 —— 拿 p.questions.length 当分母会让
@@ -1923,21 +1931,31 @@ function bindRsQ(labels){
         return;
       }
       n++;
-      const right=rsPicks[k]===rsRight(q); if(right) ok++;
+      const picked = rsPicks[k] !== undefined;
+      const right = picked && rsPicks[k]===rsRight(q); if(right) ok++;
+      if(!picked) blank++;
       document.querySelectorAll(`.rs-opt[data-k="${k}"]`).forEach(x=>{
         if(x.dataset.v===rsRight(q)) x.classList.add('ok');
         else if(x.dataset.v===rsPicks[k]) x.classList.add('bad');
       });
       document.getElementById('rsE'+k).innerHTML=
-        `<div class="rs-mark">${right?'✅ 正确':'❌ 错了'}</div>`+rsExpHTML(q);
-      // 进错题本。key 的 rid 就是 rsKey（`RS-05:1`），missItem() 认这一路，
-      // 未解锁时显示成「🔒 真题错题」而不是被静默滤掉
-      markMiss('missRead', rsKey(rsSet,p), k, right);
+        `<div class="rs-mark">${right?'✅ 正确':picked?'❌ 错了':'— 没作答'}</div>`+rsExpHTML(q);
+      /* 进错题本。key 的 rid 就是 rsKey（`RS-05:1`），missItem() 认这一路，
+         未解锁时显示成「🔒 真题错题」而不是被静默滤掉。
+
+         ⚠️ **没作答的题不记错题。** 交卷是整个 Part 一次性提交的，所以只答了
+         一半就交卷时，剩下的 rsPicks[k] 是 undefined —— 直接当错答会把
+         一整个 Part（最多 11 道）全灌进错题本，而用户根本没碰过那些题。
+         得分照旧算它不对（考试里没作答就是没分），但「错题」是「做错的题」，
+         不是「没做的题」—— 混为一谈会让错题本失去它唯一的用处。 */
+      if(picked) markMiss('missRead', rsKey(rsSet,p), k, right);
     });
     document.querySelectorAll('.rs-rev').forEach(b=>b.remove());
+    const wrong = n - ok - blank;
     document.getElementById('rsResult').innerHTML=
       `<div class="wr-lbl" style="margin-top:12px">得分 ${ok} / ${n}${
-        ok<n?`　·　${n-ok} 道已进错题本`:''}</div>`;
+        wrong?`　·　${wrong} 道已进错题本`:''}${
+        blank?`　·　${blank} 道没作答（不记错题）`:''}</div>`;
     sub.remove();
     rsSave(ok, n);
     paintMissBadge();
