@@ -833,8 +833,12 @@ function appendMissingIds(order){
    题库扩充后必须走这里。曾经只有听力做了，阅读和写作的 order 只在数组为空时生成，
    走完一轮也只是 shuffle 同一个旧数组，于是新加的篇目/题目对老存档**永远出不来** ——
    App 不报错、界面正常，看起来就像「导入没生效」。
-   返回是否发生了变化，交给调用方决定要不要 save()。 */
-function syncOrder(state, orderKey, ptrKey, allIds, byId){
+   返回是否发生了变化，交给调用方决定要不要 save()。
+
+   monotonic：这个模块的指针是**单调递增**的（目前只有听力），取题时自己取模，
+   所以「大于等于数组长度」是正常状态，不能当越界归零 —— 归零会被 mergeState 的
+   Math.max 顶回旧值，见 docs/open-bug-pointer-wrap.md。 */
+function syncOrder(state, orderKey, ptrKey, allIds, byId, monotonic){
   const order = state[orderKey];
   if(!order || !order.length){ state[orderKey] = shuffle(allIds.slice()); state[ptrKey] = 0; return true; }
   const have = new Set(order);
@@ -842,7 +846,9 @@ function syncOrder(state, orderKey, ptrKey, allIds, byId){
   const added = allIds.filter(id => !have.has(id));
   if(kept.length === order.length && !added.length) return false;
   state[orderKey] = kept.concat(added);
-  if(!(state[ptrKey] < state[orderKey].length)) state[ptrKey] = 0;
+  const bad = monotonic ? !(state[ptrKey] >= 0)                       // 只挡 undefined / NaN / 负数
+                        : !(state[ptrKey] < state[orderKey].length);  // 循环指针仍要求落在数组内
+  if(bad) state[ptrKey] = 0;
   return true;
 }
 
@@ -853,6 +859,10 @@ function mergeState(loc, rem){
   const mx = k => Math.max(loc[k]||0, rem[k]||0);
 
   out.xp = mx('xp');
+  /* ⚠️ 取 max 的前提是指针**单调递增**。听力的 lsPtr 已经改成单调（取题时才取模），
+     所以 max = 「走得更远的那个」，成立。
+     readPtr / wrPtr / grPtr 目前仍是「走完一轮回 0」的循环值，max 会把回零顶回旧值 ——
+     已知缺陷，详见 docs/open-bug-pointer-wrap.md，那三个模块另行修。 */
   out.readPtr = mx('readPtr'); out.wrPtr = mx('wrPtr'); out.lsPtr = mx('lsPtr');
   out.grPtr = mx('grPtr');
 
@@ -3308,16 +3318,39 @@ function lsPaintPlayer(){
 /* ── 选题 ── */
 // 顺序维护逻辑三个模块共用，见 syncOrder（原先只有听力有，阅读和写作漏了）
 function lsSyncOrder(){
-  if(syncOrder(S, 'lsOrder', 'lsPtr', LISTENING.map(l=>l.id), LBYID)) save();
+  if(syncOrder(S, 'lsOrder', 'lsPtr', LISTENING.map(l=>l.id), LBYID, true)) save();
+}
+/* lsPtr 在 lsOrder 里的实际下标。**指针本身是单调递增的，只在这里取模。**
+   曾经是「走完一轮回 0」的循环值，而 mergeState 用 Math.max 合并它：
+   做完最后一篇把本地推到 0，同步时 max(0, 11) 又顶回 11，日常听力永久卡死。
+   详见 docs/open-bug-pointer-wrap.md。 */
+function lsPtrIndex(){
+  const len = (S.lsOrder||[]).length;
+  if(!len) return 0;
+  return (((S.lsPtr||0) % len) + len) % len;   // 存档里万一是负数也能落回合法下标
+}
+// 指针当前指着哪一篇（还没取到题目对象，只要 id）。没有顺序数组时返回 null。
+function lsCurrentId(){
+  const len = (S.lsOrder||[]).length;
+  return len ? S.lsOrder[lsPtrIndex()] : null;
 }
 function lsCurrent(){
   lsSyncOrder();
-  const ptr = (S.lsPtr||0) % S.lsOrder.length;
-  return LBYID.get(S.lsOrder[ptr]) || LISTENING[0];
+  return LBYID.get(S.lsOrder[lsPtrIndex()]) || LISTENING[0];
 }
 function lsAdvancePtr(){
-  S.lsPtr = ((S.lsPtr||0) + 1) % S.lsOrder.length;
+  S.lsPtr = (S.lsPtr||0) + 1;   // 不取模：回零会被 mergeState 的 Math.max 顶回旧值
   save();
+}
+/* 做完一篇之后要不要推进每日轮转指针。判据是「刚做完的正好是指针指着的那篇」。
+   抠成独立函数是为了能被 test-merge.mjs 直接断言 —— finishListening() 满身 DOM，测不动。
+
+   旧判据是「这篇之前没有成绩」（prev == null），有两个毛病：
+   · 走完一轮之后每篇都有成绩，指针**再也不动**，日常听力卡在同一篇
+   · 它想挡的其实是「↻ 再听这一篇」重复推进，用当前判据同样挡得住：
+     推进之后指针已经指向下一篇，再做一次就不满足条件了。 */
+function lsShouldAdvance(it, isExam){
+  return !isExam && !!it && it.id === lsCurrentId();
 }
 
 function openListening(){
@@ -3377,7 +3410,7 @@ function renderLsIntro(){
         ${total} 道题${lsIsExam && it.imageOnly ?
           `<span class="rs-dim">（原卷 ${it.officialCount} 题，其中 ${it.imageOnly} 题是图片选项，无法在这里作答）</span>` : ''}　·　${
           lsIsExam ? '真题 '+esc(it.set)+' · Part '+it.part
-          : '第 '+((S.lsPtr||0)+1)+' / '+LISTENING.length+' 篇'}${done!=null?`　·　上次 ${done}/${total}`:''}<br>
+          : '第 '+(lsPtrIndex()+1)+' / '+LISTENING.length+' 篇'}${done!=null?`　·　上次 ${done}/${total}`:''}<br>
         按真实考试：<b>音频只播一次</b>，播完才出题，一题一题往前，不能回头。
       </div>
       ${S.muted ? `<div class="sy-msg err on" style="margin-top:10px">当前是静音状态，听力需要开声音。</div>
@@ -3501,9 +3534,8 @@ function finishListening(){
     S.lsLog[it.id] = Math.max(prev||0, n);    // 重做只记更好的成绩
   }
   if(perfect && prev !== total) addXP(LISTEN_BONUS);
-  // 只在第一次做完这篇时推进指针。否则「再听这一篇」做一次就往前跳一次，会跳过后面的篇目
-  // 真题是自己选的，不走每日轮转指针。
-  if(prev == null && !lsIsExam) lsAdvancePtr();
+  // 推进规则和它的来龙去脉见 lsShouldAdvance()。真题是自己选的，不走每日轮转指针。
+  if(lsShouldAdvance(it, lsIsExam)) lsAdvancePtr();
   save(); updateHUD(); paintMissBadge();
   if(perfect){ confetti(70); chordUp(); } else { dingCombo(2); }
   renderLsDone(n, total, perfect);
