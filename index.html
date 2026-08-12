@@ -2232,7 +2232,15 @@ function pickWriting(type){
   return WRITING.find(w=>!type||w.type===type) || WRITING[0];
 }
 
+/* ⚠️ 开头这句 spLeave() 不能删。
+   口语页住在 vWrite 里，而 showView() 的清理判据是「要去的不是 write」——
+   从口语页点底栏「表达」传进去的正是 'write'，那道防线整个不会跑。
+   于是计时器、麦克风、录音 blob 三样都留在后台：准备时间到了还会自动开录音（后台红点），
+   录音时间到了 spFinish() 会用 paintSpTask() 把 wrBody 整个重画 ——
+   用户正在写的作文界面会被一道口语题**当场顶掉**。
+   底栏「表达」在口语页是高亮态，点它回本区首页是很自然的动作，不是边角路径。 */
 function openWriting(){
+  spLeave();
   showView('write');
   if(S.wrCur && !S.wrCur.submitted) renderWrDesk();
   else if(S.wrCur && S.wrCur.submitted) renderWrReview();
@@ -2366,12 +2374,18 @@ let spTimer=null, spLeft=0, spTotal=0;
 let spRec=null, spChunks=[], spUrl=null, spStream=null;
 let spEither=null;                              // Task 6 选了哪条路（只影响显示）
 let spDenied=false;                             // 麦克风被拒/不可用 → 降级成纯计时
+/* 录音请求的代号。spBeginRec() 在 await getUserMedia() 上会停住任意长时间
+   （权限对话框弹着），这期间用户完全可能切标签、锁屏、换题。
+   spLeave() / spPause() 只能清理**已经存在**的 timer / stream / recorder，
+   拦不住一个还没返回的请求 —— 所以它们改代号，让请求回来时自己发现已经作废。 */
+let spEpoch=0;
 
 /* 离开口语页必须做的清理。三件事缺一不可：
    停计时（否则切走后倒计时还在跑、时间到了还会自动开录音）、
    停录音并关掉麦克风轨道（否则浏览器标签页的录音红点一直亮着）、
    revoke 掉 blob URL（否则这段音频会一直占着内存直到刷新）。 */
 function spLeave(){
+  spEpoch++;                                   // 作废还没返回的 getUserMedia 请求
   if(spTimer){ clearInterval(spTimer); spTimer=null; }
   try{ if(spRec && spRec.state!=='inactive') spRec.stop(); }catch{}
   spRec=null; spChunks=[];
@@ -2386,6 +2400,11 @@ function spLeave(){
    切回来会发现「时间没了、还录了一段你在别处说的话」。
    收尾而不是丢弃 —— 已经说出口的那半段仍然值得回放。 */
 function spPause(){
+  /* 作废还没返回的 getUserMedia —— **必须放在下面那句 early return 之前**。
+     「跳过准备，直接开录」走的是 spStart(0,'prep') → 直接进 spBeginRec()，
+     期间 spPhase 还是 idle，early return 会先一步跳出去；
+     那样锁屏之后权限一给，麦克风就在后台开起来了，正是这里要防的事。 */
+  spEpoch++;
   if(spPhase!=='prep' && spPhase!=='rec') return;
   if(spTimer){ clearInterval(spTimer); spTimer=null; }
   spPhase='done';
@@ -2560,12 +2579,20 @@ function spTick(){
    或者干脆不想录。这时照样走完整的计时，只是没有回放。
    绝不能因为麦克风失败就把整个练习卡住。 */
 async function spBeginRec(j){
-  const t=spTask;
+  const t=spTask, epoch=++spEpoch;
+  /* 这次请求还算不算数。await 期间用户可能已经切走、锁屏或换了题 ——
+     那时 spLeave()/spPause() 已经清理完毕，请求回来再往下走就是「死后复活」：
+     把 spPhase 改回 rec、起一个看不见的计时器、麦克风在后台亮着红点，
+     时间到了还会给一道用户早就离开的题记一笔「练过」。 */
+  const stale = () => epoch!==spEpoch || spTask!==t;
   spChunks=[]; spDenied=false;
   if(spUrl){ try{ URL.revokeObjectURL(spUrl); }catch{} spUrl=null; }
   try{
     if(!navigator.mediaDevices || !window.MediaRecorder) throw new Error('no-recorder');
-    spStream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    // 先落在局部变量上：作废时要能把刚拿到的轨道立刻关掉，而不是挂到全局等下一次清理
+    if(stale()){ try{ stream.getTracks().forEach(x=>x.stop()); }catch{} return; }
+    spStream=stream;
     spRec=new MediaRecorder(spStream);
     spRec.ondataavailable=e=>{ if(e.data && e.data.size) spChunks.push(e.data); };
     spRec.onstop=()=>{
@@ -2579,6 +2606,8 @@ async function spBeginRec(j){
     spRec.start();
   }catch(e){ spDenied=true; spRec=null;
     if(spStream){ try{ spStream.getTracks().forEach(x=>x.stop()); }catch{} spStream=null; } }
+  // 「离开之后才点了拒绝」也一样要退出：降级路径是纯计时，起来了同样是个看不见的计时器
+  if(stale()) return;
   spPhase='rec'; spLeft=t.rec; spTotal=t.rec;
   paintSpTask(j);
   spTimer=setInterval(()=>{
@@ -4034,7 +4063,22 @@ if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
 document.getElementById('wrBack').onclick=()=>showView('play');
-document.getElementById('btnMute').onclick=()=>{ S.muted=!S.muted; save(); document.getElementById('btnMute').textContent=S.muted?'🔇':'🔊'; if(S.muted) lsStop(); };
+document.getElementById('btnMute').onclick=()=>{
+  S.muted=!S.muted; save();
+  document.getElementById('btnMute').textContent=S.muted?'🔇':'🔊';
+  if(!S.muted) return;
+  /* 静音要把播放器一起换掉，不能只 lsStop()。
+     lsStop() 之后朗读队列已 cancel、看门狗已清，但播放器 DOM 还在屏幕上：
+     「⏸ 暂停」的 handler 只会把 lsPlaying 翻回 true 再 resume()（队列早没了），
+     接着 lsPaintPlayer() 把界面画成「正在播放」。此后没有声音、没有看门狗、
+     lsDone 永远不为 true，「开始答题 →」也就永远不出现 —— 用户只能退出这一篇重来。
+     判据用 lsOrb（只存在于播放器界面）而不是「在不在听力页」：
+     **正在答题时静音不能把人踢回简介页**，那会丢掉已经答过的题。 */
+  const inPlayer = document.getElementById('vListen').classList.contains('on')
+                && !!document.getElementById('lsOrb');
+  lsStop();
+  if(inPlayer) renderLsIntro();
+};
 
 /* ═══════════════ 空状态 ═══════════════ */
 function renderEmpty(){
