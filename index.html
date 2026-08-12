@@ -3847,13 +3847,69 @@ function syStat(){
   return { off:'未登录', pending:'待同步', syncing:'同步中…', ok:'已同步', err:'同步失败', offline:'离线（已排队）' }[syncStatus] || '—';
 }
 
+/* 备份区块在**三种状态下都要有**（未配置 / 未登录 / 已登录）。
+   原先只挂在已登录那一支里，等于「云同步好着的时候才给你备份」——
+   而真正需要导出/恢复的恰恰是云端用不了、或者还没登录的时候。 */
+function syBackupHTML(){
+  return `
+    <div class="sy-box">
+      <div class="sy-title">备份</div>
+      <div class="sy-msg info on">免费版 Supabase 连续 7 天无活动会暂停项目。存一份本地副本更保险。</div>
+      <button class="btn btn-g" id="syExp" style="margin-top:8px">导出进度 JSON</button>
+      <button class="btn btn-g" id="syImp">从 JSON 恢复进度</button>
+      <input type="file" id="syFile" accept=".json,application/json" style="display:none">
+      <div id="syImpMsg" class="sy-msg" style="margin-top:8px"></div>
+    </div>`;
+}
+
+function syBindBackup(body){
+  body.querySelector('#syExp').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(S,null,2)], {type:'application/json'}));
+    a.download = `wordrush-${today()}.json`; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  };
+
+  /* 恢复。**只导出不能导入等于没有备份** —— 手机清了浏览器数据、或者 iOS Safari
+     把长期没打开的站点存储回收掉之后，那个 JSON 就只是个看不懂的文件。
+
+     走 mergeState 而不是直接覆盖：合并是幂等的，只会把两边取并集 / 取更大值，
+     所以「恢复」永远不可能把现有的进度弄没。参数顺序 (当前, 导入) 让
+     当前这台的偏好（静音、音效）留着，进度取两边更好的那份 ——
+     和换新设备时「本地 fresh + 云端有货」是同一条路径，那条路是验过的。 */
+  const fileEl = body.querySelector('#syFile'), impMsg = body.querySelector('#syImpMsg');
+  const say = (t, err) => { impMsg.textContent = t; impMsg.className = 'sy-msg ' + (err?'err':'info') + ' on'; };
+  body.querySelector('#syImp').onclick = () => fileEl.click();
+  fileEl.onchange = async () => {
+    const f = fileEl.files && fileEl.files[0];
+    fileEl.value = '';                       // 选同一个文件两次也要能触发
+    if(!f) return;
+    let inc;
+    try { inc = JSON.parse(await f.text()); }
+    catch { return say('这个文件不是有效的 JSON，换一个试试。', true); }
+    // 认一眼是不是本 App 导出的：没有 words 就不是，别把随便一个 JSON 合进存档
+    if(!inc || typeof inc !== 'object' || !inc.words || typeof inc.words !== 'object'){
+      return say('这不像 Word Rush 导出的进度文件（缺 words 字段）。', true);
+    }
+    const incWords = Object.keys(inc.words).length;
+    if(!confirm(`要把这份备份合并进来吗？\n\n备份里有 ${incWords} 个词条、${inc.xp||0} XP。\n\n合并只会取两边更好的那份，不会弄丢现在的进度。`)) return;
+    S = mergeState(S, inc);
+    save(); updateHUD(); updateReadBtn(); rebuildDeck();
+    say(`已合并：现在 ${Object.keys(S.words||{}).length} 个词条 · ${S.xp||0} XP。` +
+        (cloudReady() ? '正在同步到云端…' : '（未登录，只存在本机）'));
+    if(cloudReady()) await syncNow();
+  };
+}
+
 function renderSync(){
   const body = document.getElementById('syBody');
   const learned = Object.keys(S.words||{}).length;
 
   if(!SUPA_URL || !SUPA_KEY){
     body.innerHTML = `<div class="sy-box"><div class="sy-title">云同步未配置</div>
-      <div class="sy-msg info on">这个版本没有注入 Supabase 配置，进度只存在本机浏览器里。</div></div>`;
+      <div class="sy-msg info on">这个版本没有注入 Supabase 配置，进度只存在本机浏览器里。</div></div>`
+      + syBackupHTML();
+    syBindBackup(body);
     return;
   }
 
@@ -3876,8 +3932,10 @@ function renderSync(){
         <div class="sy-row"><span>累计 XP</span><span>${S.xp||0}</span></div>
         <div class="sy-row"><span>连击</span><span>${S.streak||0} 天</span></div>
         <div class="sy-msg info on">登录时会把本机进度和云端<b>合并</b>，逐字段取更靠前的一方，不会互相覆盖。</div>
-      </div>`;
+      </div>`
+      + syBackupHTML();
 
+    syBindBackup(body);
     body.querySelectorAll('.sy-tab').forEach(b => b.onclick = () => { syTab = b.dataset.t; renderSync(); });
     body.querySelector('#syGo').onclick = async () => {
       const em = body.querySelector('#syEmail').value.trim();
@@ -3906,24 +3964,14 @@ function renderSync(){
       ${syncNote ? `<div class="sy-msg err on">${syncNote}</div>` : ''}
       <button class="btn btn-p" id="syNow" style="margin-top:10px">立即同步 ↻</button>
       <button class="btn btn-g" id="syOut">退出登录</button>
-    </div>
-    <div class="sy-box">
-      <div class="sy-title">备份</div>
-      <div class="sy-msg info on">免费版 Supabase 连续 7 天无活动会暂停项目。存一份本地副本更保险。</div>
-      <button class="btn btn-g" id="syExp" style="margin-top:8px">导出进度 JSON</button>
-    </div>`;
+    </div>` + syBackupHTML();
 
   body.querySelector('#syNow').onclick = async () => { await syncNow(); renderSync(); };
   body.querySelector('#syOut').onclick = () => {
     if(!confirm('退出后本机进度仍保留在浏览器里，只是不再同步。确定？')) return;
     setAuth(null); setSync('off'); renderSync();
   };
-  body.querySelector('#syExp').onclick = () => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(S,null,2)], {type:'application/json'}));
-    a.download = `wordrush-${today()}.json`; a.click();
-    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
-  };
+  syBindBackup(body);
 }
 
 /* 启动时若已登录，先拉一次云端（把另一台设备的进度合进来） */
