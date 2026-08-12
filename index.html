@@ -2399,7 +2399,7 @@ function renderSpSet(i){
   document.getElementById('wrTitle').textContent='🎤 口语 '+s.set;
   document.getElementById('wrBody').innerHTML=`
     <div class="coll-sub">${s.tasks.filter(t=>t.n>0).length} 个任务　·　${
-      s.hasDemos?'每题配 4-5 / 7-8 / 10-12 三档示范':'这套没有示范回答'}</div>
+      s.hasDemos?'Task 1–8 各配 4-5 / 7-8 / 10-12 三档示范':'这套没有示范回答'}</div>
     ${s.tasks.map((t,j)=>{
       const g=spGet(s,t);
       const tm=t.n===0?'':`${t.prep} 秒准备 · ${t.rec} 秒作答`;
@@ -2496,7 +2496,9 @@ function paintSpCtl(j){
           ? '这次没有录到音（浏览器没给麦克风权限），下面直接看示范。'
           : '这次没有录到音。'}</div>`}
       ${t.demos?`<button class="btn btn-p" id="spShow" style="margin-top:12px">看官方三档示范 →</button>`
-        :`<div class="rd-tip" style="margin-top:12px">这套没有示范回答，可以换 -1 结尾的套次对照。</div>`}
+        :`<div class="rd-tip" style="margin-top:12px">${t.n===0
+          ? '练习题不配示范回答 —— 官方屏录里它只演示怎么操作。正式的 Task 1–8 才有三档示范。'
+          : '这套没有示范回答，可以换 -1 结尾的套次对照。'}</div>`}
       <button class="btn btn-g" id="spAgain">再说一次 🎤</button>
       <button class="btn btn-g" id="spBack3">← 任务列表</button>`;
     const sh=document.getElementById('spShow'); if(sh) sh.onclick=()=>paintSpDemos();
