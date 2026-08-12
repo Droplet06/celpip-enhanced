@@ -840,7 +840,9 @@ function appendMissingIds(order){
    Math.max 顶回旧值，见 docs/open-bug-pointer-wrap.md。 */
 function syncOrder(state, orderKey, ptrKey, allIds, byId, monotonic){
   const order = state[orderKey];
-  if(!order || !order.length){ state[orderKey] = shuffle(allIds.slice()); state[ptrKey] = 0; return true; }
+  // 必须 Array.isArray：字符串也有 .length，会溜过这一关然后死在下面的 order.filter 上。
+  // 这条同时让已经被污染的老存档自愈 —— 重新生成一份合法的，再同步回云端。
+  if(!Array.isArray(order) || !order.length){ state[orderKey] = shuffle(allIds.slice()); state[ptrKey] = 0; return true; }
   const have = new Set(order);
   const kept = order.filter(id => byId.has(id));
   const added = allIds.filter(id => !have.has(id));
@@ -866,11 +868,17 @@ function mergeState(loc, rem){
   out.readPtr = mx('readPtr'); out.wrPtr = mx('wrPtr'); out.lsPtr = mx('lsPtr');
   out.grPtr = mx('grPtr');
 
-  // 顺序数组一旦生成就锁定 —— 两边不一致会让出题顺序整个错乱
-  out.readOrder  = loc.readOrder  || rem.readOrder  || null;
-  out.wrOrder    = loc.wrOrder    || rem.wrOrder    || null;
-  out.lsOrder    = loc.lsOrder    || rem.lsOrder    || null;
-  out.grOrder    = loc.grOrder    || rem.grOrder    || null;
+  /* 顺序数组一旦生成就锁定 —— 两边不一致会让出题顺序整个错乱。
+     ⚠️ **必须验类型，不能只看 truthy。** 远端那份要是被别的版本或别的 bug 写成了字符串，
+     `loc || rem` 会照单全收，而 syncNow() 的顺序是「merge → 写 localStorage → push」——
+     坏值当场固化在本地**并原样传回云端**，两边一起坏掉。
+     之后进那个模块：`"broken".length` 是 6，进不了 syncOrder 的「空数组」分支，
+     直接死在 `order.filter` 上，那个模块的入口从此点不开。 */
+  const arr = x => Array.isArray(x) ? x : null;
+  out.readOrder  = arr(loc.readOrder)  || arr(rem.readOrder)  || null;
+  out.wrOrder    = arr(loc.wrOrder)    || arr(rem.wrOrder)    || null;
+  out.lsOrder    = arr(loc.lsOrder)    || arr(rem.lsOrder)    || null;
+  out.grOrder    = arr(loc.grOrder)    || arr(rem.grOrder)    || null;
 
   /* ── introOrder 和 introPtr 必须一起决定 ──
      introPtr 是「在 introOrder 里走到第几个」，是相对于某一份具体顺序的下标。
@@ -889,13 +897,13 @@ function mergeState(loc, rem){
     .some(w => w && ((w.lvl||0) || (w.seen||0) || (w.wrong||0)));
   const locUnused = !hasWordProgress(loc);
 
-  if(!loc.introOrder){
-    out.introOrder = rem.introOrder || null;
+  if(!arr(loc.introOrder)){                   // 同上：非数组一律当「本地还没有」
+    out.introOrder = arr(rem.introOrder);
     out.introPtr   = rem.introPtr || 0;
-  } else if(locUnused && rem.introOrder && rem.introOrder.length){
+  } else if(locUnused && arr(rem.introOrder) && rem.introOrder.length){
     out.introOrder = rem.introOrder;          // 认云端那份，指针才对得上
     out.introPtr   = rem.introPtr || 0;
-  } else if(sameOrder(loc.introOrder, rem.introOrder)){
+  } else if(sameOrder(loc.introOrder, arr(rem.introOrder))){
     out.introOrder = loc.introOrder;
     out.introPtr   = mx('introPtr');          // 同一份顺序，取走得更远的那个
   } else {
@@ -1090,6 +1098,33 @@ addEventListener('pagehide', () => {
 
 /* ═══════════════ 状态 ═══════════════ */
 function today(){ return new Date().toLocaleDateString('en-CA'); }  // YYYY-MM-DD 本地时区
+/* 「昨天」必须按**本地日历**算，不能用 `Date.now()-864e5`。
+   秋令时回拨那天本地有 25 小时：11 月 1 日 23:30 减 24 小时还落在 11 月 1 日，
+   于是「昨天」算成了今天 —— 连击判定里 lastGoalDay 既不等于今天也不等于「昨天」，直接清零。
+   出错窗口只有回拨日的 23:00–24:00 这一小时，但那正好是用户最常练的时段，
+   而 2026-11-01 就落在这次无人维护期里。
+   先把时间锚到中午再退一天，避开 DST 那一两个小时的塌缩。 */
+function prevLocalDay(){
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() - 1);
+  return d.toLocaleDateString('en-CA');
+}
+/* 日切：把「今天」推进到当前日历日，并按「上次达标日是不是昨天」决定连击断不断。
+   返回是否真的跨了日。
+
+   **rollover() 和答题时都要走这里。** rollover() 是启动时跑一次的 IIFE，
+   页面开着过午夜它早就跑完了：`dailyDone` 停在昨天的数字上继续往上加，
+   于是 `dailyDone===GOAL` 再也不成立 —— 新的一天做够 12 个也永远不记达标，
+   目标环还显示着昨天的进度。反过来，昨天只做了 5 个的话，
+   今天答对 7 个就会被凑成 12，跨天累加出一个假的达标。 */
+function rollDayIfNeeded(){
+  const t = today();
+  if(S.day === t) return false;
+  if(S.lastGoalDay !== t && S.lastGoalDay !== prevLocalDay()) S.streak = 0;
+  S.day = t; S.dailyDone = 0;
+  return true;
+}
 
 function fresh(){
   return { words:{}, xp:0, streak:0, lastGoalDay:null,
@@ -1119,10 +1154,56 @@ function pruneHist(h){
   Object.keys(h).forEach(d => { if(d >= cut) out[d] = h[d]; });
   return out;
 }
+/* 存档结构归一化。**这是启动路径上的第一段代码，它自己崩了就是白屏** ——
+   而无人维护期里的一次白屏等于永久失效：用户连「我的」页都进不去，导不出备份。
+
+   旧代码只有 `s && s.words ? s : fresh()` 一道 truthy 门，两类坏存档都拦不住：
+
+   · **解析失败**（写到一半断电、iOS 回收存储把值截断）→ 直接 fresh()，
+     而 rollover() 结尾无条件 save()，**首屏出现之前原始数据就被覆盖掉了**。
+     没登录 / 离线 / 云端更旧的话，那份数据就真的没了。
+   · **解析成功但字段类型不对** → `s.words` truthy 就放行，然后死在后面：
+     `introOrder:{}` 会让 appendMissingIds 里的 `new Set({})` 抛 TypeError（`{}` 不可迭代），
+     `words:{"1":null}` 会让 rebuildDeck 的 `S.words[id].lvl` 抛错。两处都在启动路径上。
+
+   原则：**能救的字段就地修，救不了的单个字段退回默认值，绝不因为一个字段坏掉丢掉整包进度。**
+   返回 null 表示「这根本不是一个 state 对象」，交给 load() 走备份 + 重来。 */
+function normalizeState(s){
+  if(!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  const out = Object.assign({}, fresh(), s);      // 缺的字段用默认值补齐，不丢已有的
+  const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
+  // 各种「按 id 存记录」的表：不是普通对象就退回 {}（null 会让 Object.keys 直接抛）
+  ['words','readLog','rsLog','wrLog','lsLog','grLog','spLog','hist','missRead','missLs']
+    .forEach(k => { if(!isObj(out[k])) out[k] = {}; });
+  // words 里的坏条目直接删掉 —— rebuildDeck() 会访问 .lvl，留一个 null 就是启动崩
+  Object.keys(out.words).forEach(id => { if(!isObj(out.words[id])) delete out.words[id]; });
+  // 顺序数组：不是数组就当没有，各模块的 syncOrder() / rollover() 会重新生成
+  ['introOrder','readOrder','wrOrder','lsOrder','grOrder']
+    .forEach(k => { if(!Array.isArray(out[k])) out[k] = null; });
+  // 指针和计数：非有限数一律归零，否则 Math.max 和 % 一路算出 NaN，界面显示 NaN 且永不恢复
+  ['introPtr','readPtr','wrPtr','lsPtr','grPtr','xp','streak','dailyDone']
+    .forEach(k => { if(!Number.isFinite(out[k])) out[k] = 0; });
+  // 这两个要么是 null 要么是对象，字符串会让渲染函数取属性取到 undefined
+  ['readToday','wrCur'].forEach(k => { if(out[k] != null && !isObj(out[k])) out[k] = null; });
+  return out;
+}
+
 let S = load();
 function load(){
-  try{ const s = JSON.parse(localStorage.getItem(LS_KEY)); return s && s.words ? s : fresh(); }
-  catch{ return fresh(); }
+  const raw = localStorage.getItem(LS_KEY);
+  if(raw == null) return fresh();                 // 真·新用户，没有任何东西要保护
+  let parsed = null;
+  try{ parsed = JSON.parse(raw); }catch{}
+  const st = normalizeState(parsed);
+  if(st) return st;
+  /* 到这儿说明这份存档救不回来了。**先把原文抄到另一个 key 再 fresh()** ——
+     rollover() 结尾无条件 save()，不备份的话原始数据在首屏出现之前就被覆盖，
+     用户连「拿去让人看看还剩什么」的机会都没有。
+     已有备份就不覆盖：第二次坏掉时，第一份（更可能是完整的）更值钱。 */
+  try{
+    if(localStorage.getItem(LS_KEY+'_corrupt') == null) localStorage.setItem(LS_KEY+'_corrupt', raw);
+  }catch{}
+  return fresh();
 }
 function save(){ localStorage.setItem(LS_KEY, JSON.stringify(S)); syncQueue(); }
 
@@ -1155,14 +1236,10 @@ function save(){ localStorage.setItem(LS_KEY, JSON.stringify(S)); syncQueue(); }
   if(S.grPtr === undefined) S.grPtr = 0;
   // grOrder 不在这里生成：语法是下级页，不进就不该凭空写一个顺序数组进存档。
   // 进页面时 syncOrder() 会按需生成，逻辑和阅读/写作/听力一致。
-  if(S.day !== t){
-    // 判断连击是否中断：上次达标日必须是「昨天」才续；否则清零
-    const y = new Date(Date.now()-864e5).toLocaleDateString('en-CA');
-    if(S.lastGoalDay !== t && S.lastGoalDay !== y) S.streak = 0;
-    S.day = t; S.dailyDone = 0;
-  } else {
-    const y = new Date(Date.now()-864e5).toLocaleDateString('en-CA');
-    if(S.lastGoalDay && S.lastGoalDay !== t && S.lastGoalDay !== y) S.streak = 0;
+  // 跨日：推进日期 + 按「上次达标日是不是昨天」决定连击断不断（逻辑见 rollDayIfNeeded）
+  if(!rollDayIfNeeded()){
+    // 同一天内启动：日期不用动，但连击仍可能是断的（比如隔了两天才打开）
+    if(S.lastGoalDay && S.lastGoalDay !== t && S.lastGoalDay !== prevLocalDay()) S.streak = 0;
   }
   save();
 })();
@@ -1473,6 +1550,8 @@ function applyCorrect(v, gold, msg){
   const mult=Math.floor(combo/5)+1;
   const xp=10*mult*(gold?2:1);
   addXP(xp); floatXP(xp, gold);
+  // 页面开着过午夜时，这一次答题就是新一天的第一次 —— 先滚日，否则昨天的计数会接着往上加
+  if(rollDayIfNeeded()) updateHUD();
   S.dailyDone++; bump('v');
   w.lvl=Math.min(4,(w.lvl||0)+1);
   if(w.lvl<4) requeue(v.id, Math.min(deck.length, 4+w.lvl*3));  // 等级越高，隔越久
@@ -1575,8 +1654,9 @@ function checkGoal(){
   if(S.dailyDone===GOAL){
     const t=today();
     if(S.lastGoalDay!==t){
-      const y=new Date(Date.now()-864e5).toLocaleDateString('en-CA');
-      S.streak = (S.lastGoalDay===y || S.streak===0) ? S.streak+1 : S.streak+1;
+      // 昨天达标过就接着连，否则从 1 重新开始。
+      // 原先这里三元的两个分支都是 S.streak+1，等于没有判断 —— 断掉的连击会被接着往上加。
+      S.streak = (S.lastGoalDay===prevLocalDay()) ? S.streak+1 : 1;
       S.lastGoalDay=t; save(); updateHUD();
     }
     confetti(90); chordUp();

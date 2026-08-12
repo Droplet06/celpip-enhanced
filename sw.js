@@ -57,9 +57,16 @@ self.addEventListener('fetch', e => {
         fresh,
         new Promise(r => setTimeout(() => r(null), NAV_TIMEOUT)),
       ]);
-      if (timed) return timed;
+      /* ⚠️ 必须看 res.ok，不能只看「有没有响应」。
+         fetch() 只在网络层失败时 reject，HTTP 502/503 是**成功完成**的请求 ——
+         上游抽风时它 300ms 就回来了，比超时快得多，于是这个错误页被直接端给用户，
+         明明缓存里躺着一份能用的 App 也不看。结果是「网差反而比彻底断网更糟」：
+         断网能回落缓存，秒回的 503 打不开。
+         非 2xx 时不 return，继续走下面的回落链；缓存也没有才把真实响应交出去
+         —— 交真实的 503 比换成我们自己的「离线」文案有用，至少能看出是服务端的问题。 */
+      if (timed && timed.ok) return timed;
       e.waitUntil(fresh);                                 // 超时了也让它跑完，把新版写进缓存
-      return cached || (await fresh) || offline();
+      return cached || timed || (await fresh) || offline();
     }
 
     e.waitUntil(fresh);                                   // 其余资源：返回缓存后让后台更新跑完
