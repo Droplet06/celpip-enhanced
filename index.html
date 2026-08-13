@@ -752,8 +752,11 @@ const cloudReady = () => !!(SUPA_URL && SUPA_KEY && AUTH);
 
 function setAuth(a){
   AUTH = a;
-  if(a) localStorage.setItem(AUTH_KEY, JSON.stringify(a));
-  else  localStorage.removeItem(AUTH_KEY);
+  // 同 persistLocal：存储写失败不能抛出去。登录流程里抛一次，整个登录就断在半路
+  try{
+    if(a) localStorage.setItem(AUTH_KEY, JSON.stringify(a));
+    else  localStorage.removeItem(AUTH_KEY);
+  }catch(e){ console.error('保存登录状态失败', e); }
   paintSyncDot();
 }
 
@@ -796,7 +799,17 @@ async function ensureToken(){
   if(Date.now() < AUTH.expires_at - 60000) return true;
   const r = await supaFetch('/auth/v1/token?grant_type=refresh_token',
     {method:'POST', body:JSON.stringify({refresh_token:AUTH.refresh_token})}, false);
-  if(!r.ok){ setAuth(null); throw new Error('登录已过期，请重新登录'); }
+  /* ⚠️ 只有「凭据本身失效」才能退出登录，服务端临时抽风不行。
+     `setAuth(null)` 会让 `cloudReady()` 永远为 false，而**所有重试入口都以它为前提**：
+     syncQueue 的 3 秒防抖、online、切回前台、pagehide 全部在第一行就 return。
+     于是一次几百毫秒的 429/503 就把自动同步**永久关掉**，界面只剩一个小红点，
+     用户在外只会以为「网不好」，继续练几个月 —— 进度只存在这一台手机里。
+     刷新页面后 AUTH 也没了，连失败原因都不再保留。
+     网络层失败（fetch reject）不会走到这里，本来就保住了 AUTH。 */
+  if(!r.ok){
+    if(r.status === 429 || r.status >= 500) throw new Error('登录服务暂时不可用，稍后会自动重试');
+    setAuth(null); throw new Error('登录已过期，请重新登录');
+  }
   const j = await r.json();
   setAuth(Object.assign({}, AUTH, {
     access_token:j.access_token,
@@ -809,10 +822,20 @@ async function ensureToken(){
    不能用 last-write-wins：手机练完半小时，电脑一开旧存档就把你覆盖了。
    状态几乎全是单调增长的，所以逐字段取「更进一步」的那份，且幂等
    （同一份数据重复同步不会把计数翻倍）。 */
+/* ⚠️ `lvl` **不能取 max** —— 它是会下降的：答错时 `applyWrong()` 把它降一级。
+   取 max 的话，云端那份旧的高 lvl 会在 3 秒后把刚刚的降级顶回去，
+   而错词列表的判据是 `wrong>0 && lvl<4`：一个刚答错的词会被顶成 lvl 4，
+   直接从「待消灭」跳进「已消灭」，再也不会被拿出来复习。
+
+   判断哪边更新用 `seen` —— 它在 `answer()` 开头无条件自增，是单调的因果计数器：
+   谁答过的次数多，谁的 lvl 就是更晚的那个。次数相同才退回 max（保住原来的取舍：
+   在一台设备上已经练上去的等级，不被另一台的旧记录拉低）。
+   `seen` / `wrong` 本身单调，继续取 max。 */
 function mergeWord(a, b){
   if(!a) return b; if(!b) return a;
-  return { lvl:  Math.max(a.lvl||0,   b.lvl||0),
-           seen: Math.max(a.seen||0,  b.seen||0),
+  const sa = a.seen||0, sb = b.seen||0;
+  return { lvl:  sa === sb ? Math.max(a.lvl||0, b.lvl||0) : (sa > sb ? (a.lvl||0) : (b.lvl||0)),
+           seen: Math.max(sa, sb),
            wrong:Math.max(a.wrong||0, b.wrong||0) };
 }
 
@@ -952,16 +975,21 @@ function mergeState(loc, rem){
      和 hist 一样不能求和 —— 求和不幂等，反复同步会让「做过 N 次」越滚越大，
      正确率跟着一起失真。取 max 的代价是同一题在两台设备各做一次只算一次，
      但少算远好过多算。
-     s 取 max 和 lsLog「取高分」是同一个取舍：在一台设备上已经连对消灭掉的题，
-     不因为另一台的旧记录被重新丢回复习列表。s 在写入时封顶 MISS_CLEAR，
-     所以 max 不会让它无限增长，合并仍然幂等。 */
+     ⚠️ **但 `s` 不能取 max** —— 它是会归零的：`answerGrammar()` 答错时 `e.s = 0`。
+     取 max 的话云端旧的 `s=2` 会把刚刚的归零顶回去，而 `grWrongIds()` 的判据是
+     `n>ok && s<MISS_CLEAR`：明明刚错了一次，却因为 s 还是 2 而进不了
+     「只练做错过的」列表。判断哪边更新用 `n`（做过次数，单调自增）：
+     谁做的次数多谁的 s 就是更晚的。次数相同才退回 max —— 那时才是原来那个取舍：
+     一台设备上已经连对消灭掉的题，不被另一台的旧记录重新丢回复习列表。
+     s 写入时封顶 MISS_CLEAR，所以合并仍然幂等。 */
   out.grLog = {};
   new Set([...Object.keys(loc.grLog||{}), ...Object.keys(rem.grLog||{})]).forEach(id => {
     const a = (loc.grLog||{})[id] || {}, b = (rem.grLog||{})[id] || {};
+    const na = a.n||0, nb = b.n||0;
     out.grLog[id] = {
-      n:  Math.max(a.n||0,  b.n||0),
+      n:  Math.max(na, nb),
       ok: Math.max(a.ok||0, b.ok||0),
-      s:  Math.max(a.s||0,  b.s||0),
+      s:  na === nb ? Math.max(a.s||0, b.s||0) : (na > nb ? (a.s||0) : (b.s||0)),
       day: (a.day||'') > (b.day||'') ? a.day : (b.day||a.day||''),
     };
   });
@@ -985,13 +1013,21 @@ function mergeState(loc, rem){
   });
   out.hist = pruneHist(out.hist);
 
-  // 错题（阅读 / 听力）：并集，错次和重做对次取 max，日期取更晚的
+  /* 错题（阅读 / 听力）：并集，错次 n 取 max，日期取更晚的。
+     ⚠️ **`ok`（重做连对次数）不能取 max** —— `markMiss()` 答错时把它写回 0。
+     取 max 的话云端旧的 `ok=2` 会把归零顶回去，而 `missOpen()` 第一关就是
+     `ok >= MISS_CLEAR 直接滤掉`：刚答错的题会**当场从错题本消失**。
+     判断哪边更新用 `n` —— 它只在答错时自增，是「最近又错了一次」的因果证据：
+     谁的 n 大，谁的 ok 就是那次答错之后的状态。n 相同才退回 max，
+     那时才是原来的取舍（别让旧记录把已消灭的题重新丢回来）。 */
   const mergeMiss = (la, ra) => {
     const o = {};
     new Set([...Object.keys(la||{}), ...Object.keys(ra||{})]).forEach(k => {
       const a = (la||{})[k] || {}, b = (ra||{})[k] || {};
+      const na = a.n||0, nb = b.n||0;
       o[k] = { d: (a.d||'') > (b.d||'') ? a.d : (b.d||a.d||null),
-               n: Math.max(a.n||0, b.n||0), ok: Math.max(a.ok||0, b.ok||0) };
+               n: Math.max(na, nb),
+               ok: na === nb ? Math.max(a.ok||0, b.ok||0) : (na > nb ? (a.ok||0) : (b.ok||0)) };
     });
     return o;
   };
@@ -1002,7 +1038,11 @@ function mergeState(loc, rem){
   const la = loc.lastGoalDay||'', lr = rem.lastGoalDay||'';
   if(lr > la){ out.lastGoalDay = rem.lastGoalDay; out.streak = rem.streak||0; }
   else if(la > lr){ out.lastGoalDay = loc.lastGoalDay; out.streak = loc.streak||0; }
-  else { out.lastGoalDay = loc.lastGoalDay||null; out.streak = Math.max(loc.streak||0, rem.streak||0); }
+  /* ⚠️ 最后达标日**相同**时不能取 max。健康状态下两边的 streak 本来就该一样；
+     会不一样只有一个原因 —— 有一边已经发现连击断了并清了零，而清零时**不动 lastGoalDay**
+     （`rollDayIfNeeded()` 就是这么写的）。取 max 等于让还没发现的那一边把断掉的连击复活，
+     而且会 push 回云端，两边一起错。取 min：已经发现断了的那一方说了算。 */
+  else { out.lastGoalDay = loc.lastGoalDay||null; out.streak = Math.min(loc.streak||0, rem.streak||0); }
 
   // 当天进度：同一天取大，跨天以更晚那天为准
   const da = loc.day||'', dr = rem.day||'';
@@ -1020,7 +1060,12 @@ function mergeState(loc, rem){
   else if(!rr) out.readToday = ra;
   else if((rr.day||'') > (ra.day||'')) out.readToday = rr;
   else if((ra.day||'') > (rr.day||'')) out.readToday = ra;
-  else if(ra.id !== rr.id) out.readToday = ra;
+  /* 同日不同篇：原先无条件认本地。但启动时 `todayReading()` 是**无条件**跑的，
+     新设备还没登录就已经自己抽了一篇写进 readToday —— 62 篇里撞上同一篇的概率只有 1/62，
+     所以换设备当天几乎必然走到这里，把手机上「今天已读完」冲成「没读，0 分」，
+     还会 push 回云端。一边已完成、另一边只是启动时凭空生成的话，让已完成的赢；
+     两边都没读完（各自真的在读）才保住本地正在读的那篇。 */
+  else if(ra.id !== rr.id) out.readToday = (rr.done && !ra.done) ? rr : ra;
   else out.readToday = { day:ra.day, id:ra.id, done:!!(ra.done||rr.done),
                          score:Math.max(ra.score||0, rr.score||0) };
 
@@ -1061,7 +1106,7 @@ async function syncNow(){
     const rem = await pullRemote();
     const before = JSON.stringify(S);
     S = mergeState(S, rem ? rem.state : null);
-    localStorage.setItem(LS_KEY, JSON.stringify(S));
+    persistLocal();          // 本机写不进去也要接着 push —— 这时云端是唯一的后路
     await pushRemote(S);
     syncDirty = false; lastSyncAt = Date.now();
     setSync('ok');
@@ -1175,8 +1220,16 @@ function normalizeState(s){
   // 各种「按 id 存记录」的表：不是普通对象就退回 {}（null 会让 Object.keys 直接抛）
   ['words','readLog','rsLog','wrLog','lsLog','grLog','spLog','hist','missRead','missLs']
     .forEach(k => { if(!isObj(out[k])) out[k] = {}; });
-  // words 里的坏条目直接删掉 —— rebuildDeck() 会访问 .lvl，留一个 null 就是启动崩
-  Object.keys(out.words).forEach(id => { if(!isObj(out.words[id])) delete out.words[id]; });
+  /* words 里的坏条目直接删掉 —— rebuildDeck() 会访问 .lvl，留一个 null 就是启动崩。
+     三个数字叶子也要校验：导入一份被改过的备份时，`lvl:"x"` 会让 mergeWord 的
+     Math.max 算出 NaN，而 NaN 在 words 里是修不回来的（下次启动只看条目是不是对象）。 */
+  Object.keys(out.words).forEach(id => {
+    const w = out.words[id];
+    if(!isObj(w)){ delete out.words[id]; return; }
+    // 只修「有这个字段但不是有限数」的：缺字段本来就靠各处的 ||0 兜着，
+    // 补上去等于每次启动都改写用户数据的形状，没必要
+    ['lvl','seen','wrong'].forEach(f => { if(f in w && !Number.isFinite(w[f])) w[f] = 0; });
+  });
   // 顺序数组：不是数组就当没有，各模块的 syncOrder() / rollover() 会重新生成
   ['introOrder','readOrder','wrOrder','lsOrder','grOrder']
     .forEach(k => { if(!Array.isArray(out[k])) out[k] = null; });
@@ -1205,7 +1258,34 @@ function load(){
   }catch{}
   return fresh();
 }
-function save(){ localStorage.setItem(LS_KEY, JSON.stringify(S)); syncQueue(); }
+/* 写本机存储可能**直接失败**：iOS 的配额比桌面小得多，系统还会回收长期不用的站点存储，
+   写不下时 `setItem` 抛 QuotaExceededError。**这个异常绝不能穿透到业务代码。**
+
+   答题路径清一色是「先禁用选项 → save() → 再创建下一题按钮」（阅读 answerRead、
+   听力 answerListen、语法 answerGrammar 都是这个结构）：save() 一抛，
+   选项全灰、下一题按钮根本没被创建，这一组练习**当场走不下去**，只能退出重进。
+   更糟的是 rollover() 结尾那次 save()：它在启动脚本里，一抛就打断后面的
+   导航绑定和 nextCard()，用户连「我的 → 导出备份」都点不到。
+
+   返回是否写成功。**失败也要继续走云同步** —— 本机存不下时，云端是唯一的后路，
+   绝不能因为本地写挂了就连上传都不试。 */
+let storageWarned = false;
+function persistLocal(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(S)); return true; }
+  catch(e){
+    console.error('本机存储写入失败', e);
+    if(!storageWarned){
+      storageWarned = true;
+      // 延后一拍再弹：先让当前这次渲染把「下一题」按钮画出来，别把人卡在半截界面上
+      setTimeout(() => alert(
+        '这台设备的浏览器存储写不进去了（多半是空间满了）。\n\n' +
+        '现在的进度只在内存里，刷新或关掉页面就会丢。\n\n' +
+        '请先去「我的 → 云同步」把备份导出来，再清理一些浏览器数据。'), 0);
+    }
+    return false;
+  }
+}
+function save(){ persistLocal(); syncQueue(); }
 
 // 每日滚动 + 连击维护
 (function rollover(){
@@ -4049,9 +4129,17 @@ function syBindBackup(body){
     try { inc = JSON.parse(await f.text()); }
     catch { return say('这个文件不是有效的 JSON，换一个试试。', true); }
     // 认一眼是不是本 App 导出的：没有 words 就不是，别把随便一个 JSON 合进存档
-    if(!inc || typeof inc !== 'object' || !inc.words || typeof inc.words !== 'object'){
+    if(!inc || typeof inc !== 'object' || !inc.words || typeof inc.words !== 'object'
+       || Array.isArray(inc.words)){                     // typeof [] 也是 'object'，得单挡
       return say('这不像 Word Rush 导出的进度文件（缺 words 字段）。', true);
     }
+    /* 导入的是**不可信 JSON**（可能被改过、可能是别的版本），
+       而 mergeState() 的设计前提一直是「两边都是 App 自己产出的合法数据」。
+       比如 `xp:"oops"` 会让 `Math.max(321,"oops")` 算出 NaN，
+       JSON.stringify 再把 NaN 写成 null —— 确认框上那句「不会弄丢现在的进度」就不成立了。
+       load() 已经有一整套归一化，这里复用它，不另写一套 schema。 */
+    inc = normalizeState(inc);
+    if(!inc) return say('这个备份的结构不对，没法合并。', true);
     const incWords = Object.keys(inc.words).length;
     if(!confirm(`要把这份备份合并进来吗？\n\n备份里有 ${incWords} 个词条、${inc.xp||0} XP。\n\n合并只会取两边更好的那份，不会弄丢现在的进度。`)) return;
     S = mergeState(S, inc);
