@@ -858,7 +858,7 @@ function appendMissingIds(order){
    App 不报错、界面正常，看起来就像「导入没生效」。
    返回是否发生了变化，交给调用方决定要不要 save()。
 
-   monotonic：这个模块的指针是**单调递增**的（目前只有听力），取题时自己取模，
+   monotonic：这个模块的指针是**单调递增**的，取题时自己取模，
    所以「大于等于数组长度」是正常状态，不能当越界归零 —— 归零会被 mergeState 的
    Math.max 顶回旧值，见 docs/open-bug-pointer-wrap.md。 */
 function syncOrder(state, orderKey, ptrKey, allIds, byId, monotonic){
@@ -884,10 +884,9 @@ function mergeState(loc, rem){
   const mx = k => Math.max(loc[k]||0, rem[k]||0);
 
   out.xp = mx('xp');
-  /* ⚠️ 取 max 的前提是指针**单调递增**。听力的 lsPtr 已经改成单调（取题时才取模），
-     所以 max = 「走得更远的那个」，成立。
-     readPtr / wrPtr / grPtr 目前仍是「走完一轮回 0」的循环值，max 会把回零顶回旧值 ——
-     已知缺陷，详见 docs/open-bug-pointer-wrap.md，那三个模块另行修。 */
+  /* 取 max 的前提是指针**单调递增**。四个模块都只在取题时取模，指针本身不回零，
+     所以 max = 「走得更远的那个」。order 首次生成后锁定，不在每轮结束时各自重洗，
+     否则两台设备会产生不同顺序，指针数值也失去共同含义。 */
   out.readPtr = mx('readPtr'); out.wrPtr = mx('wrPtr'); out.lsPtr = mx('lsPtr');
   out.grPtr = mx('grPtr');
 
@@ -1233,9 +1232,13 @@ function normalizeState(s){
   // 顺序数组：不是数组就当没有，各模块的 syncOrder() / rollover() 会重新生成
   ['introOrder','readOrder','wrOrder','lsOrder','grOrder']
     .forEach(k => { if(!Array.isArray(out[k])) out[k] = null; });
-  // 指针和计数：非有限数一律归零，否则 Math.max 和 % 一路算出 NaN，界面显示 NaN 且永不恢复
+  // 指针和计数：非有限数一律归零，否则 Math.max 和 % 一路算出 NaN，界面显示 NaN 且永不恢复。
+  // 负数同样归零：这几个字段没有一个允许为负，而负指针不会报错，只会让模块**静默变死** ——
+  // (-1) % len 还是 -1，readOrder[-1] 是 undefined，当天短文没有 id；语法那边队列为空，
+  // 「开始一组」点了没反应。听力的 lsPtrIndex() 自己有一道 ((x%len)+len)%len 的门，
+  // 另外三个模块改成单调指针后直接取模，这道门就得在这里统一补上。
   ['introPtr','readPtr','wrPtr','lsPtr','grPtr','xp','streak','dailyDone']
-    .forEach(k => { if(!Number.isFinite(out[k])) out[k] = 0; });
+    .forEach(k => { if(!Number.isFinite(out[k]) || out[k] < 0) out[k] = 0; });
   // 这两个要么是 null 要么是对象，字符串会让渲染函数取属性取到 undefined
   ['readToday','wrCur'].forEach(k => { if(out[k] != null && !isObj(out[k])) out[k] = null; });
   return out;
@@ -1759,16 +1762,15 @@ document.getElementById('rBtn2').onclick=()=>{ document.getElementById('overlay'
 /* ═══════════════ 每日阅读 ═══════════════ */
 let rdItem=null, rdQi=0, rdMarks=[], rdLocked=false;
 
-// 今天读哪一篇：打乱后按顺序推进，读完一轮再洗牌
+// 今天读哪一篇：首次打乱后固定顺序循环；指针单调递增，避免同步时被旧值顶回去
 function todayReading(){
   // 题库扩充后新增的篇目必须能进得来（见 syncOrder 的注释）
-  if(syncOrder(S, 'readOrder', 'readPtr', READING.map(r=>r.id), RBYID)) save();
+  if(syncOrder(S, 'readOrder', 'readPtr', READING.map(r=>r.id), RBYID, true)) save();
   if(!S.readLog) S.readLog = {};
   if(!S.readToday || S.readToday.day !== today()){
     const ptr = (S.readPtr||0) % S.readOrder.length;
     S.readToday = { day:today(), id:S.readOrder[ptr], done:false, score:0 };
-    S.readPtr = ptr + 1;
-    if(S.readPtr >= S.readOrder.length){ S.readOrder = shuffle(S.readOrder); S.readPtr = 0; }
+    S.readPtr = (S.readPtr||0) + 1;
     save();
   }
   return S.readToday;
@@ -2379,15 +2381,15 @@ function wrLimitMs(it){ return (it.timeMinutes || WR_MIN[it.type] || 27) * 60000
 function wrUsed(c){ return (c.usedMs||0) + (c.resumedAt ? Date.now()-c.resumedAt : 0); }
 function mmss(ms){ const s=Math.max(0,Math.round(ms/1000)); return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
 
-// 抽题：按类型洗牌轮转，一轮走完再洗，避免重复撞题
+// 抽题：首次洗牌后按类型轮转；指针单调递增，取题时才取模
 function pickWriting(type){
   // 题库扩充后新增的题目必须能进得来（见 syncOrder 的注释）
-  if(syncOrder(S, 'wrOrder', 'wrPtr', WRITING.map(w=>w.id), WBYID)) save();
+  if(syncOrder(S, 'wrOrder', 'wrPtr', WRITING.map(w=>w.id), WBYID, true)) save();
   const n = S.wrOrder.length;
   for(let i=0;i<n;i++){
     const id = S.wrOrder[(S.wrPtr + i) % n];
     const it = WBYID.get(id);
-    if(it && (!type || it.type===type)){ S.wrPtr = (S.wrPtr + i + 1) % n; if(S.wrPtr===0) S.wrOrder = shuffle(S.wrOrder); save(); return it; }
+    if(it && (!type || it.type===type)){ S.wrPtr = (S.wrPtr||0) + i + 1; save(); return it; }
   }
   return WRITING.find(w=>!type||w.type===type) || WRITING[0];
 }
@@ -2960,7 +2962,7 @@ function renderGrHome(){
   showView('write');
   document.getElementById('wrTitle').textContent='🧩 语法练习';
   // 题库扩充后新增的题必须能进得来（见 syncOrder 的注释）
-  if(syncOrder(S, 'grOrder', 'grPtr', GRAMMAR.map(g=>g.id), GBYID)) save();
+  if(syncOrder(S, 'grOrder', 'grPtr', GRAMMAR.map(g=>g.id), GBYID, true)) save();
   const acc = grAcc(), wrong = grWrongIds();
   const byTopic = {};
   GRAMMAR.forEach(g=>{ (byTopic[g.topic] = byTopic[g.topic] || []).push(g); });
@@ -2970,7 +2972,7 @@ function renderGrHome(){
       acc.n?` · 正确率 ${Math.round(acc.ok/acc.n*100)}%`:''}</div>
     <div class="wr-box">
       <div class="wr-lbl">一组 ${GR_SET} 题</div>
-      <div class="wr-sit">按顺序往下走，走完一轮自动重洗。答错会给中文解析。</div>
+      <div class="wr-sit">按固定顺序循环，走完一轮从头继续。答错会给中文解析。</div>
     </div>
     <button class="btn btn-p" id="grGo">开始一组 →</button>
     ${wrong.length?`<button class="btn btn-g" id="grWrong">只练做错过的（${wrong.length} 道）🎯</button>`:''}
@@ -2990,7 +2992,7 @@ function renderGrHome(){
 }
 
 /* ── 组队：一组 GR_SET 题 ──
-   常规模式沿 grOrder 往下走并推进 grPtr，走完一轮重洗（和写作抽题同一个套路）。
+   常规模式沿 grOrder 往下走并推进 grPtr；首次洗牌后固定顺序循环（和写作抽题同一个套路）。
    按专题 / 只练错题是**临时挑选**，不动 grPtr —— 否则正常轮转会被跳着走。 */
 function startGrammar(topic, onlyWrong){
   grOnlyWrong = onlyWrong;
@@ -3004,8 +3006,7 @@ function startGrammar(topic, onlyWrong){
       const id = S.grOrder[(S.grPtr + i) % n];
       if(GBYID.has(id)) grQueue.push(id);
     }
-    S.grPtr = (S.grPtr + grQueue.length) % n;
-    if(S.grPtr === 0) S.grOrder = shuffle(S.grOrder);
+    S.grPtr = (S.grPtr||0) + grQueue.length;
     save();
   }
   if(!grQueue.length) return renderGrHome();
